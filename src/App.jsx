@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const STORAGE_KEY = "life-leveling-v5-pwa";
+const STORAGE_KEY = "life-leveling-v6-offline";
 
 const todayKey = () => {
   const d = new Date();
