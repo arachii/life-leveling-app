@@ -137,7 +137,7 @@ const initialState = {
   settledDays: 0,
   fireLog: [],
   lastReport: "還沒有結算紀錄。",
-  message: "v5 手機版：主線、支線、獎勵、角色成長都可以長期保存。",
+  message: "v6 手機版：主線、支線、獎勵、角色成長都可以長期保存。",
   tasks: defaultTasks,
   rewards: defaultRewards,
   attrs: { 體力: 42, 智力: 36, 財力: 51, 家庭: 45, 心力: 32, 魅力: 20 },
