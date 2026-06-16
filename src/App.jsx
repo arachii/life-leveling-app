@@ -105,21 +105,21 @@ const defaultTasks = [
     attrExp: 12,
     done: false,
   },
-{
-  id: 7,
-  title: "簡易健身",
-  desc: "伏地挺身、深蹲、散步、伸展都算。",
-  standard: "完成：運動5分鐘。漂亮完成：運動15分鐘以上。",
-  group: "支線",
-  type: "體能訓練",
-  difficulty: "D",
-  coins: 40,
-  exp: 25,
-  energy: 5,
-  attr: "體力",
-  attrExp: 20,
-  done: false,
-}
+  {
+    id: 7,
+    title: "簡易健身",
+    desc: "伏地挺身、深蹲、散步、伸展都算。",
+    standard: "完成：運動5分鐘。漂亮完成：運動15分鐘以上。",
+    group: "支線",
+    type: "體能訓練",
+    difficulty: "D",
+    coins: 40,
+    exp: 25,
+    energy: 5,
+    attr: "體力",
+    attrExp: 20,
+    done: false,
+  }
 ];
 
 const defaultRewards = [
@@ -281,19 +281,9 @@ const initialState = {
   totalCoinsEarned: 0,
   settledDays: 0,
   fireLog: [],
-  lastReport: report,
-
-reportHistory: [
-  {
-    date: prev.day,
-    title: todayTitle,
-    done: done,
-    total: prev.tasks.length,
-    report: report,
-  },
-  ...(prev.reportHistory || []),
-].slice(0, 100),
-  message: "v8 戰報美化版：每天不一定很強，但每天都要留下戰報。",
+  lastReport: "還沒有結算紀錄。",
+  reportHistory: [],
+  message: "v9 戰報美化版：每天不一定很強，但每天都要留下戰報。",
   tasks: defaultTasks,
   rewards: defaultRewards,
   attrs: { 體力: 0, 智力: 0, 財力: 0, 家庭: 0, 心力: 0, 魅力: 0 },
@@ -385,6 +375,7 @@ export default function LifeLevelingAppPrototype() {
   const dailyTitle = getDailyTitle(state.tasks);
   const battleMessage = getBattleMessage(state.tasks);
 
+  // 用於立即強制重新載入或修正狀態的方法
   function patch(updater) {
     setState((prev) => {
       const current = prev.day !== todayKey() ? resetDailyFields(prev) : prev;
@@ -481,6 +472,7 @@ export default function LifeLevelingAppPrototype() {
     setRewardFormOpen(false);
   }
 
+  // 刪除獎勵功能
   function deleteReward(id) {
     patch((prev) => ({
       ...prev,
@@ -542,6 +534,17 @@ export default function LifeLevelingAppPrototype() {
         settledDays: prev.settledDays + 1,
         fireLog,
         lastReport: report,
+        // ✅ 修正：把歷史戰報推入陣列的邏輯精準放在結算行為中！
+        reportHistory: [
+          {
+            date: prev.day,
+            title: todayTitle,
+            done: done,
+            total: prev.tasks.length,
+            report: report,
+          },
+          ...(prev.reportHistory || []),
+        ].slice(0, 100),
         message: `今日戰報完成：${todayTitle}。`,
       };
     });
@@ -851,35 +854,29 @@ export default function LifeLevelingAppPrototype() {
                 </div>
               </div>
 
+              {/* 歷史戰報區塊 */}
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
-                <h3 className="font-black">最近一次戰報</h3><div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 mt-3">
-  <h3 className="font-black mb-3">歷史戰報</h3>
+                <h3 className="font-black mb-3">歷史戰報</h3>
 
-  {(state.reportHistory || []).length === 0 ? (
-    <p className="text-slate-400 text-sm">
-      尚未產生歷史戰報
-    </p>
-  ) : (
-    (state.reportHistory || []).map((item, index) => (
-      <div
-        key={index}
-        className="border-b border-slate-700 py-3"
-      >
-        <div className="font-bold">
-          {item.date}
-        </div>
+                {(state.reportHistory || []).length === 0 ? (
+                  <p className="text-slate-400 text-sm">尚未產生歷史戰報</p>
+                ) : (
+                  <div className="max-h-60 overflow-y-auto space-y-3 pr-1">
+                    {(state.reportHistory || []).map((item, index) => (
+                      <div key={index} className="border-b border-slate-700 pb-3 last:border-0">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-white text-sm">{item.date}</span>
+                          <span className="text-slate-400 text-xs">完成 {item.done}/{item.total}</span>
+                        </div>
+                        <div className="text-amber-300 text-sm mt-1">{item.title}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-        <div className="text-amber-300 text-sm">
-          {item.title}
-        </div>
-
-        <div className="text-slate-400 text-xs">
-          完成 {item.done}/{item.total}
-        </div>
-      </div>
-    ))
-  )}
-</div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
+                <h3 className="font-black">最近一次戰報詳細文字</h3>
                 <p className="text-sm text-slate-300 mt-2 whitespace-pre-line leading-relaxed">{state.lastReport}</p>
               </div>
             </section>
@@ -956,6 +953,7 @@ export default function LifeLevelingAppPrototype() {
   );
 }
 
+// 子元件定義區
 function TaskCard({ task, onComplete, onDelete }) {
   return (
     <div className={`rounded-3xl border p-4 ${taskToneClass(task.group, task.done)}`}>
@@ -976,31 +974,12 @@ function TaskCard({ task, onComplete, onDelete }) {
               {task.difficulty} 級
             </span>
             <span className="text-xs px-2 py-1 rounded-full bg-slate-700 text-slate-300">{task.type}</span>
-            {task.done && <span className="text-xs px-2 py-1 rounded-full bg-emerald-300 text-emerald-950 font-bold">已完成</span>}
           </div>
-
-          <h3 className={`font-black text-lg ${task.done ? "line-through text-slate-400" : "text-white"}`}>
-            {task.title}
-          </h3>
-
-          <p className="text-sm text-slate-400 mt-1 leading-relaxed break-words">{task.desc}</p>
-
-          {task.standard && (
-            <p className="text-xs text-slate-500 mt-2 leading-relaxed break-words">完成標準：{task.standard}</p>
-          )}
-
-          <div className="flex gap-3 text-sm text-slate-400 mt-3 flex-wrap">
-            <span>+{task.coins} 金幣</span>
-            <span>+{task.exp} EXP</span>
-            <span>
-              {task.attr} +{task.attrExp}
-            </span>
-          </div>
+          <h3 className={`font-black text-lg ${task.done ? "line-through text-slate-500" : "text-white"}`}>{task.title}</h3>
+          <p className="text-sm text-slate-400 mt-1">{task.desc}</p>
+          <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2 mt-2 font-medium">{task.standard}</p>
         </div>
-
-        <button onClick={() => onDelete(task.id)} className="text-slate-500 hover:text-rose-300 p-1 shrink-0">
-          刪
-        </button>
+        <button onClick={() => onDelete(task.id)} className="text-slate-600 hover:text-rose-400 text-sm p-1">✕</button>
       </div>
     </div>
   );
@@ -1008,52 +987,50 @@ function TaskCard({ task, onComplete, onDelete }) {
 
 function StatCard({ label, value }) {
   return (
-    <div className="bg-slate-800/85 rounded-3xl p-3 border border-slate-700 shadow-[0_10px_22px_rgba(0,0,0,0.18)]">
-      <p className="text-xs text-slate-400">{label}</p>
-      <p className="font-black text-2xl mt-1">{value}</p>
+    <div className="bg-slate-950/50 border border-slate-800 rounded-2xl p-3 text-center">
+      <p className="text-xs text-slate-500 font-bold">{label}</p>
+      <p className="text-xl font-black text-white mt-1">{value}</p>
     </div>
   );
 }
 
 function RecordBox({ label, value }) {
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-2xl p-3 text-center">
-      <p className="text-xs text-slate-400">{label}</p>
-      <p className="text-2xl font-black mt-1">{value}</p>
+    <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 text-center">
+      <p className="text-xs text-slate-500 font-bold">{label}</p>
+      <p className="text-lg font-black text-white mt-1">{value}</p>
     </div>
   );
 }
 
-function Input({ label, value, onChange, type = "text", placeholder = "" }) {
+function Input({ label, type = "text", value, onChange, placeholder }) {
   return (
-    <label className="block">
-      <span className="text-sm text-slate-400">{label}</span>
+    <div>
+      <label className="block text-xs text-slate-400 mb-1 font-bold">{label}</label>
       <input
         type={type}
         value={value}
-        placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-2xl bg-slate-950 border border-slate-700 px-4 py-3 text-slate-100 outline-none focus:border-amber-300"
+        placeholder={placeholder}
+        className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-amber-400"
       />
-    </label>
+    </div>
   );
 }
 
 function Select({ label, value, onChange, options }) {
   return (
-    <label className="block">
-      <span className="text-sm text-slate-400">{label}</span>
+    <div>
+      <label className="block text-xs text-slate-400 mb-1 font-bold">{label}</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-2xl bg-slate-950 border border-slate-700 px-4 py-3 text-slate-100 outline-none focus:border-amber-300"
+        className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-amber-400"
       >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
+        {options.map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
         ))}
       </select>
-    </label>
+    </div>
   );
 }
