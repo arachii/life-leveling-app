@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const STORAGE_KEY = "life-leveling-v8-battle-report";
+const STORAGE_KEY = "life-leveling-main-save";
+
+const OLD_STORAGE_KEYS = [
+  "life-leveling-v8-battle-report",
+  "life-leveling-v9-record-history",
+  "life-leveling-v7-growth",
+  "life-leveling-v6-offline",
+  "life-leveling-v5-pwa",
+];
 
 function todayKey() {
   const d = new Date();
@@ -12,6 +20,26 @@ function todayKey() {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function loadSavedState() {
+  try {
+    const mainSave = localStorage.getItem(STORAGE_KEY);
+    if (mainSave) return JSON.parse(mainSave);
+
+    for (const key of OLD_STORAGE_KEYS) {
+      const oldSave = localStorage.getItem(key);
+      if (oldSave) {
+        const parsed = JSON.parse(oldSave);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        return parsed;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 const defaultTasks = [
@@ -48,7 +76,7 @@ const defaultTasks = [
   {
     id: 3,
     title: "房仲不斷線",
-    desc: "完成任一件房仲小事：整理客戶、打一通電話、回覆客戶、看一個社區行情、發短貼文都可以。",
+    desc: "完成任一件房仲小事：整理客戶、打一通電話、回覆客戶、看社區行情、發短貼文都可以。",
     standard: "完成：碰一件房仲小事。漂亮完成：有實際聯絡客戶、更新資料或產出貼文。",
     group: "主線",
     type: "房仲業務",
@@ -92,6 +120,21 @@ const defaultTasks = [
   },
   {
     id: 6,
+    title: "簡易健身",
+    desc: "伏地挺身、深蹲、散步、伸展都算。重點不是練壯，是讓身體不要停機。",
+    standard: "完成：運動 5 分鐘。漂亮完成：運動 15 分鐘以上。",
+    group: "支線",
+    type: "體能訓練",
+    difficulty: "D",
+    coins: 40,
+    exp: 25,
+    energy: 5,
+    attr: "體力",
+    attrExp: 20,
+    done: false,
+  },
+  {
+    id: 7,
     title: "隨機事件：低壓前進",
     desc: "今天任選一件 5 分鐘小事完成：整理桌面、拍素材、讀一頁書、走路 5 分鐘都可以。",
     standard: "完成：做一件 5 分鐘小事。漂亮完成：做完後有讓狀態變清爽一點。",
@@ -105,21 +148,6 @@ const defaultTasks = [
     attrExp: 12,
     done: false,
   },
-  {
-    id: 7,
-    title: "簡易健身",
-    desc: "伏地挺身、深蹲、散步、伸展都算。",
-    standard: "完成：運動5分鐘。漂亮完成：運動15分鐘以上。",
-    group: "支線",
-    type: "體能訓練",
-    difficulty: "D",
-    coins: 40,
-    exp: 25,
-    energy: 5,
-    attr: "體力",
-    attrExp: 20,
-    done: false,
-  }
 ];
 
 const defaultRewards = [
@@ -184,6 +212,25 @@ const playerTitles = [
   { level: 15, title: "人生主線開拓者" },
 ];
 
+const initialState = {
+  day: todayKey(),
+  coins: 0,
+  exp: 0,
+  energy: 70,
+  todayCoins: 0,
+  todayExp: 0,
+  totalTasks: 0,
+  totalCoinsEarned: 0,
+  settledDays: 0,
+  fireLog: [],
+  lastReport: "還沒有結算紀錄。",
+  reportHistory: [],
+  message: "v9 紀錄健身版：保留歷史戰報，加入簡易健身任務。",
+  tasks: defaultTasks,
+  rewards: defaultRewards,
+  attrs: { 體力: 0, 智力: 0, 財力: 0, 家庭: 0, 心力: 0, 魅力: 0 },
+};
+
 function getPlayerTitle(level) {
   let title = playerTitles[0].title;
   for (const item of playerTitles) {
@@ -203,6 +250,67 @@ function attrLevel(value) {
 function attrTitle(name, value) {
   const titles = attrMeta[name]?.titles || ["正在成長"];
   return titles[Math.min(titles.length - 1, attrLevel(value) - 1)];
+}
+
+function mergeDefaultTasks(savedTasks) {
+  const saved = Array.isArray(savedTasks) ? savedTasks : [];
+  const defaultIds = new Set(defaultTasks.map((task) => task.id));
+
+  const mergedDefaults = defaultTasks.map((defaultTask) => {
+    const old = saved.find((task) => task.id === defaultTask.id || task.title === defaultTask.title);
+    return old ? { ...defaultTask, done: Boolean(old.done) } : clone(defaultTask);
+  });
+
+  const customTasks = saved.filter((task) => !defaultIds.has(task.id));
+
+  return [...mergedDefaults, ...customTasks];
+}
+
+function normalizeLoadedState(raw) {
+  const base = { ...initialState, ...(raw || {}) };
+
+  base.tasks = mergeDefaultTasks(base.tasks);
+  base.rewards = Array.isArray(base.rewards) ? base.rewards : clone(defaultRewards);
+  base.attrs = { ...initialState.attrs, ...(base.attrs || {}) };
+  base.fireLog = Array.isArray(base.fireLog) ? base.fireLog : [];
+  base.reportHistory = Array.isArray(base.reportHistory) ? base.reportHistory : [];
+
+  base.coins = Number(base.coins || 0);
+  base.exp = Number(base.exp || 0);
+  base.energy = Number(base.energy || 70);
+  base.todayCoins = Number(base.todayCoins || 0);
+  base.todayExp = Number(base.todayExp || 0);
+  base.totalTasks = Number(base.totalTasks || 0);
+  base.totalCoinsEarned = Number(base.totalCoinsEarned || 0);
+  base.settledDays = Number(base.settledDays || 0);
+
+  return base;
+}
+
+function resetDailyFields(state) {
+  return {
+    ...state,
+    day: todayKey(),
+    tasks: clone(defaultTasks),
+    energy: 70,
+    todayCoins: 0,
+    todayExp: 0,
+    message: "新的一天開始。先完成一個小事件，讓今天不要歸零。",
+  };
+}
+
+function getLast7FireLog(fireLog) {
+  return Array.from({ length: 7 }).map((_, index) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - index));
+    const key = d.toISOString().slice(0, 10);
+    const item = fireLog.find((x) => x.date === key);
+    return {
+      date: key,
+      label: `${d.getMonth() + 1}/${d.getDate()}`,
+      done: Boolean(item?.done),
+    };
+  });
 }
 
 function difficultyClass(level) {
@@ -244,10 +352,13 @@ function getDailyTitle(tasks) {
   const uberDone = tasks.some((task) => task.type === "UberEats" && task.done);
   const estateDone = tasks.some((task) => task.type === "房仲業務" && task.done);
   const familyDone = tasks.some((task) => task.type === "家庭守護" && task.done);
+  const fitnessDone = tasks.some((task) => task.type === "體能訓練" && task.done);
 
   if (done === tasks.length) return "今日全清";
+  if (uberDone && estateDone && familyDone && fitnessDone) return "四線守住者";
   if (uberDone && estateDone && familyDone) return "三線守住者";
   if (uberDone && estateDone) return "雙線推進者";
+  if (fitnessDone) return "身體有開機";
   if (estateDone) return "房仲戰線未斷";
   if (uberDone) return "現金流有接住";
   if (done >= 3) return "今天有穩住";
@@ -261,73 +372,23 @@ function getBattleMessage(tasks) {
   const uberDone = tasks.some((task) => task.type === "UberEats" && task.done);
   const estateDone = tasks.some((task) => task.type === "房仲業務" && task.done);
   const familyDone = tasks.some((task) => task.type === "家庭守護" && task.done);
+  const fitnessDone = tasks.some((task) => task.type === "體能訓練" && task.done);
 
   if (done === total) return "今日全清，狀態漂亮。你不是靠爆發，是靠把每條線都接住。";
+  if (uberDone && estateDone && familyDone && fitnessDone) return "四線守住：現金流、房仲、家庭、身體都有碰到，這是很好的節奏。";
   if (uberDone && estateDone && familyDone) return "今日節奏很好：現金流、房仲、家庭都有碰到，人生主線有接住。";
   if (uberDone && estateDone) return "雙線推進成功：今天現金流與房仲都沒有斷。";
+  if (fitnessDone) return "身體有開機。哪怕只動 5 分鐘，也是在防止自己停機。";
   if (done >= 3) return "今天有穩住。不是大爆發，但節奏有回來。";
   if (done >= 1) return "火種未滅。至少有做一件事，今天就不是歸零。";
   return "還沒開局。先完成一個 E 級事件，今天就不算完全掉線。";
 }
 
-const initialState = {
-  day: todayKey(),
-  coins: 0,
-  exp: 0,
-  energy: 70,
-  todayCoins: 0,
-  todayExp: 0,
-  totalTasks: 0,
-  totalCoinsEarned: 0,
-  settledDays: 0,
-  fireLog: [],
-  lastReport: "還沒有結算紀錄。",
-  reportHistory: [],
-  message: "v9 戰報美化版：每天不一定很強，但每天都要留下戰報。",
-  tasks: defaultTasks,
-  rewards: defaultRewards,
-  attrs: { 體力: 0, 智力: 0, 財力: 0, 家庭: 0, 心力: 0, 魅力: 0 },
-};
-
-function normalizeLoadedState(raw) {
-  const base = { ...initialState, ...(raw || {}) };
-  base.tasks = Array.isArray(base.tasks) ? base.tasks : clone(defaultTasks);
-  base.rewards = Array.isArray(base.rewards) ? base.rewards : clone(defaultRewards);
-  base.attrs = { ...initialState.attrs, ...(base.attrs || {}) };
-  return base;
-}
-
-function resetDailyFields(state) {
-  return {
-    ...state,
-    day: todayKey(),
-    tasks: clone(defaultTasks),
-    energy: 70,
-    todayCoins: 0,
-    todayExp: 0,
-    message: "新的一天開始。先完成一個小事件，讓今天不要歸零。",
-  };
-}
-
-function getLast7FireLog(fireLog) {
-  return Array.from({ length: 7 }).map((_, index) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (6 - index));
-    const key = d.toISOString().slice(0, 10);
-    const item = fireLog.find((x) => x.date === key);
-    return {
-      date: key,
-      label: `${d.getMonth() + 1}/${d.getDate()}`,
-      done: Boolean(item?.done),
-    };
-  });
-}
-
 export default function LifeLevelingAppPrototype() {
   const [state, setState] = useState(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      const loaded = saved ? normalizeLoadedState(JSON.parse(saved)) : clone(initialState);
+      const saved = loadSavedState();
+      const loaded = saved ? normalizeLoadedState(saved) : clone(initialState);
       return loaded.day !== todayKey() ? resetDailyFields(loaded) : loaded;
     } catch {
       return clone(initialState);
@@ -352,7 +413,8 @@ export default function LifeLevelingAppPrototype() {
   });
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const normalized = normalizeLoadedState(state);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   }, [state]);
 
   const completed = state.tasks.filter((task) => task.done);
@@ -360,9 +422,13 @@ export default function LifeLevelingAppPrototype() {
 
   const visibleTasks = useMemo(() => {
     if (!isSurvival) return state.tasks;
-    return state.tasks
-      .filter((task) => task.group === "主線" || task.type === "保命任務" || task.difficulty === "D")
-      .slice(0, 4);
+
+    return state.tasks.filter(
+      (task) =>
+        task.group === "主線" ||
+        task.type === "保命任務" ||
+        task.type === "體能訓練"
+    );
   }, [state.tasks, isSurvival]);
 
   const usedEnergy = completed.reduce((sum, task) => sum + Number(task.energy || 0), 0);
@@ -375,12 +441,20 @@ export default function LifeLevelingAppPrototype() {
   const dailyTitle = getDailyTitle(state.tasks);
   const battleMessage = getBattleMessage(state.tasks);
 
-  // 用於立即強制重新載入或修正狀態的方法
   function patch(updater) {
     setState((prev) => {
-      const current = prev.day !== todayKey() ? resetDailyFields(prev) : prev;
+      const current = prev.day !== todayKey() ? resetDailyFields(prev) : normalizeLoadedState(prev);
       return typeof updater === "function" ? updater(current) : { ...current, ...updater };
     });
+  }
+
+  function repairTasks() {
+    patch((prev) => ({
+      ...prev,
+      tasks: mergeDefaultTasks(prev.tasks),
+      message: "已修復今日任務：簡易健身已加入。",
+    }));
+    setTab("today");
   }
 
   function completeTask(id) {
@@ -472,7 +546,6 @@ export default function LifeLevelingAppPrototype() {
     setRewardFormOpen(false);
   }
 
-  // 刪除獎勵功能
   function deleteReward(id) {
     patch((prev) => ({
       ...prev,
@@ -509,14 +582,22 @@ export default function LifeLevelingAppPrototype() {
         .map((task) => `- ${task.title}：${task.done ? "完成" : "未完成"}`)
         .join("\n");
 
+      const supportLines = prev.tasks
+        .filter((task) => task.group !== "主線")
+        .map((task) => `- ${task.title}：${task.done ? "完成" : "未完成"}`)
+        .join("\n");
+
       const report = [
         `日期：${prev.day}`,
         `完成事件：${done}/${prev.tasks.length}`,
         `今日金幣：+${prev.todayCoins}`,
         `今日 EXP：+${prev.todayExp}`,
         "",
-        `今日主線：`,
+        "今日主線：",
         mainLines,
+        "",
+        "支線與隨機：",
+        supportLines,
         "",
         `今日稱號：${todayTitle}`,
         `系統評語：${todayComment}`,
@@ -527,24 +608,29 @@ export default function LifeLevelingAppPrototype() {
         { date: prev.day, done: done > 0 },
       ].slice(-30);
 
+      const alreadySettledToday = (prev.reportHistory || []).some((item) => item.date === prev.day);
+
+      const reportHistory = [
+        {
+          date: prev.day,
+          title: todayTitle,
+          done,
+          total: prev.tasks.length,
+          coins: prev.todayCoins,
+          exp: prev.todayExp,
+          report,
+        },
+        ...(prev.reportHistory || []).filter((item) => item.date !== prev.day),
+      ].slice(0, 100);
+
       setTab("record");
 
       return {
         ...prev,
-        settledDays: prev.settledDays + 1,
+        settledDays: alreadySettledToday ? prev.settledDays : prev.settledDays + 1,
         fireLog,
         lastReport: report,
-        // ✅ 修正：把歷史戰報推入陣列的邏輯精準放在結算行為中！
-        reportHistory: [
-          {
-            date: prev.day,
-            title: todayTitle,
-            done: done,
-            total: prev.tasks.length,
-            report: report,
-          },
-          ...(prev.reportHistory || []),
-        ].slice(0, 100),
+        reportHistory,
         message: `今日戰報完成：${todayTitle}。`,
       };
     });
@@ -566,7 +652,7 @@ export default function LifeLevelingAppPrototype() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v9 紀錄成長版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v9 紀錄健身版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -651,16 +737,13 @@ export default function LifeLevelingAppPrototype() {
             <section className="space-y-3">
               <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-black">今日事件</h2>
-                <button
-                  onClick={newDay}
-                  className="text-slate-300 rounded-full px-3 py-2 hover:bg-slate-800 flex items-center gap-1"
-                >
+                <button onClick={newDay} className="text-slate-300 rounded-full px-3 py-2 hover:bg-slate-800 flex items-center gap-1">
                   <span>↻</span> 新的一天
                 </button>
               </div>
 
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 text-sm text-slate-300 leading-relaxed">
-                今天不用完美，只求不掉線：UberEats 有出車一點、房仲有碰一下、家庭有顧到、自己還在。
+                今天不用完美，只求不掉線：UberEats 有出車一點、房仲有碰一下、家庭有顧到、身體有動一下。
               </div>
 
               {visibleTasks.map((task) => (
@@ -676,34 +759,10 @@ export default function LifeLevelingAppPrototype() {
 
               {taskFormOpen && (
                 <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
-                  <Input
-                    label="事件名稱"
-                    value={newTask.title}
-                    onChange={(v) => setNewTask({ ...newTask, title: v })}
-                    placeholder="例如：打給一位老客戶"
-                  />
-
-                  <Input
-                    label="金幣"
-                    type="number"
-                    value={newTask.coins}
-                    onChange={(v) => setNewTask({ ...newTask, coins: v })}
-                  />
-
-                  <Select
-                    label="分類"
-                    value={newTask.group}
-                    onChange={(v) => setNewTask({ ...newTask, group: v })}
-                    options={["主線", "支線", "隨機"]}
-                  />
-
-                  <Select
-                    label="成長屬性"
-                    value={newTask.attr}
-                    onChange={(v) => setNewTask({ ...newTask, attr: v })}
-                    options={Object.keys(attrMeta)}
-                  />
-
+                  <Input label="事件名稱" value={newTask.title} onChange={(v) => setNewTask({ ...newTask, title: v })} placeholder="例如：打給一位老客戶" />
+                  <Input label="金幣" type="number" value={newTask.coins} onChange={(v) => setNewTask({ ...newTask, coins: v })} />
+                  <Select label="分類" value={newTask.group} onChange={(v) => setNewTask({ ...newTask, group: v })} options={["主線", "支線", "隨機"]} />
+                  <Select label="成長屬性" value={newTask.attr} onChange={(v) => setNewTask({ ...newTask, attr: v })} options={Object.keys(attrMeta)} />
                   <button onClick={addTask} className="w-full bg-amber-300 text-slate-950 rounded-2xl py-3 font-black">
                     加入事件
                   </button>
@@ -727,25 +786,17 @@ export default function LifeLevelingAppPrototype() {
                   onClick={() =>
                     patch({
                       energy: option.value,
-                      message:
-                        option.value <= 30
-                          ? "已切換成保命模式，今天只求不斷線。"
-                          : `今日能量設定為 ${option.value}。`,
+                      message: option.value <= 30 ? "已切換成保命模式，今天只求不斷線。" : `今日能量設定為 ${option.value}。`,
                     })
                   }
                   className={`w-full text-left rounded-3xl border p-4 flex justify-between items-center ${
-                    state.energy === option.value
-                      ? "bg-amber-300 text-slate-950 border-amber-200"
-                      : "bg-slate-800 text-slate-100 border-slate-700"
+                    state.energy === option.value ? "bg-amber-300 text-slate-950 border-amber-200" : "bg-slate-800 text-slate-100 border-slate-700"
                   }`}
                 >
                   <div>
                     <h3 className="font-black">{option.label}</h3>
-                    <p className={`text-sm ${state.energy === option.value ? "text-slate-700" : "text-slate-400"}`}>
-                      {option.desc}
-                    </p>
+                    <p className={`text-sm ${state.energy === option.value ? "text-slate-700" : "text-slate-400"}`}>{option.desc}</p>
                   </div>
-
                   <div className="text-3xl font-black">{option.value}</div>
                 </button>
               ))}
@@ -756,10 +807,7 @@ export default function LifeLevelingAppPrototype() {
             <section className="space-y-3">
               <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-black">獎勵商店</h2>
-                <button
-                  onClick={() => setRewardFormOpen((v) => !v)}
-                  className="rounded-full bg-slate-800 px-3 py-2 text-sm border border-slate-700"
-                >
+                <button onClick={() => setRewardFormOpen((v) => !v)} className="rounded-full bg-slate-800 px-3 py-2 text-sm border border-slate-700">
                   ＋ 新增
                 </button>
               </div>
@@ -768,27 +816,9 @@ export default function LifeLevelingAppPrototype() {
 
               {rewardFormOpen && (
                 <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
-                  <Input
-                    label="獎勵名稱"
-                    value={newReward.title}
-                    onChange={(v) => setNewReward({ ...newReward, title: v })}
-                    placeholder="例如：吃一餐牛排"
-                  />
-
-                  <Input
-                    label="花費金幣"
-                    type="number"
-                    value={newReward.cost}
-                    onChange={(v) => setNewReward({ ...newReward, cost: v })}
-                  />
-
-                  <Select
-                    label="標籤"
-                    value={newReward.tag}
-                    onChange={(v) => setNewReward({ ...newReward, tag: v })}
-                    options={["小爽", "娛樂", "真爽", "美食", "家庭", "人生目標"]}
-                  />
-
+                  <Input label="獎勵名稱" value={newReward.title} onChange={(v) => setNewReward({ ...newReward, title: v })} placeholder="例如：吃一餐牛排" />
+                  <Input label="花費金幣" type="number" value={newReward.cost} onChange={(v) => setNewReward({ ...newReward, cost: v })} />
+                  <Select label="標籤" value={newReward.tag} onChange={(v) => setNewReward({ ...newReward, tag: v })} options={["小爽", "娛樂", "真爽", "美食", "家庭", "人生目標"]} />
                   <button onClick={addReward} className="w-full bg-amber-300 text-slate-950 rounded-2xl py-3 font-black">
                     加入獎勵
                   </button>
@@ -796,30 +826,18 @@ export default function LifeLevelingAppPrototype() {
               )}
 
               {state.rewards.map((reward) => (
-                <div
-                  key={reward.id}
-                  className="bg-slate-800 border border-slate-700 rounded-3xl p-4 flex justify-between items-center gap-3 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
-                >
+                <div key={reward.id} className="bg-slate-800 border border-slate-700 rounded-3xl p-4 flex justify-between items-center gap-3 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
                   <div className="min-w-0">
-                    <span className={`text-xs px-2 py-1 rounded-full font-bold ${rewardClass(reward.tag)}`}>
-                      {reward.tag}
-                    </span>
+                    <span className={`text-xs px-2 py-1 rounded-full font-bold ${rewardClass(reward.tag)}`}>{reward.tag}</span>
                     <h3 className="font-bold mt-2 break-words">{reward.title}</h3>
                     <p className="text-sm text-slate-400">需要 {reward.cost} 金幣</p>
                   </div>
 
                   <div className="flex gap-2 shrink-0">
-                    <button
-                      onClick={() => redeemReward(reward)}
-                      className="rounded-2xl bg-amber-300 text-slate-950 px-3 py-2 font-black"
-                    >
+                    <button onClick={() => redeemReward(reward)} className="rounded-2xl bg-amber-300 text-slate-950 px-3 py-2 font-black">
                       兌換
                     </button>
-
-                    <button
-                      onClick={() => deleteReward(reward.id)}
-                      className="rounded-2xl bg-slate-700 text-slate-300 px-3 py-2"
-                    >
+                    <button onClick={() => deleteReward(reward.id)} className="rounded-2xl bg-slate-700 text-slate-300 px-3 py-2">
                       刪
                     </button>
                   </div>
@@ -845,30 +863,32 @@ export default function LifeLevelingAppPrototype() {
                 <div className="grid grid-cols-7 gap-2 mt-3">
                   {getLast7FireLog(state.fireLog).map((day) => (
                     <div key={day.date} className="bg-slate-950 border border-slate-800 rounded-2xl p-2 text-center">
-                      <div className={`font-black ${day.done ? "text-amber-300" : "text-slate-600"}`}>
-                        {day.done ? "火" : "○"}
-                      </div>
+                      <div className={`font-black ${day.done ? "text-amber-300" : "text-slate-600"}`}>{day.done ? "火" : "○"}</div>
                       <div className="text-[10px] text-slate-500 mt-1">{day.label}</div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* 歷史戰報區塊 */}
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
                 <h3 className="font-black mb-3">歷史戰報</h3>
 
                 {(state.reportHistory || []).length === 0 ? (
                   <p className="text-slate-400 text-sm">尚未產生歷史戰報</p>
                 ) : (
-                  <div className="max-h-60 overflow-y-auto space-y-3 pr-1">
+                  <div className="max-h-64 overflow-y-auto space-y-3 pr-1">
                     {(state.reportHistory || []).map((item, index) => (
-                      <div key={index} className="border-b border-slate-700 pb-3 last:border-0">
+                      <div key={`${item.date}-${index}`} className="border-b border-slate-700 pb-3 last:border-0">
                         <div className="flex justify-between items-center">
                           <span className="font-bold text-white text-sm">{item.date}</span>
-                          <span className="text-slate-400 text-xs">完成 {item.done}/{item.total}</span>
+                          <span className="text-slate-400 text-xs">
+                            完成 {item.done}/{item.total}
+                          </span>
                         </div>
                         <div className="text-amber-300 text-sm mt-1">{item.title}</div>
+                        <div className="text-slate-500 text-xs mt-1">
+                          +{item.coins || 0} 金幣 / +{item.exp || 0} EXP
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -931,14 +951,24 @@ export default function LifeLevelingAppPrototype() {
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                 <h3 className="font-black">版本</h3>
                 <p className="text-sm text-slate-300 leading-relaxed">
-                  v9 紀錄成長版：保留歷史戰報，新增簡易健身任務。
+                  v9 紀錄健身版：保留歷史戰報，新增簡易健身任務，並固定使用主存檔避免以後改版歸零。
                 </p>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
+                <h3 className="font-black">任務修復</h3>
+                <p className="text-sm text-slate-300 leading-relaxed">
+                  如果沒有看到「簡易健身」，按這個按鈕會自動補回預設任務。
+                </p>
+                <button onClick={repairTasks} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">
+                  修復今日任務
+                </button>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                 <h3 className="font-black">資料儲存</h3>
                 <p className="text-sm text-slate-300 leading-relaxed">
-                  目前資料存在本機瀏覽器。換手機或清除瀏覽資料會消失；之後可以再升級雲端同步。
+                  目前資料存在本機瀏覽器。v9 之後固定使用主存檔 life-leveling-main-save，之後 v10、v11 不要再改這個 key。
                 </p>
               </div>
 
@@ -953,7 +983,6 @@ export default function LifeLevelingAppPrototype() {
   );
 }
 
-// 子元件定義區
 function TaskCard({ task, onComplete, onDelete }) {
   return (
     <div className={`rounded-3xl border p-4 ${taskToneClass(task.group, task.done)}`}>
@@ -974,12 +1003,27 @@ function TaskCard({ task, onComplete, onDelete }) {
               {task.difficulty} 級
             </span>
             <span className="text-xs px-2 py-1 rounded-full bg-slate-700 text-slate-300">{task.type}</span>
+            {task.done && <span className="text-xs px-2 py-1 rounded-full bg-emerald-300 text-emerald-950 font-bold">已完成</span>}
           </div>
+
           <h3 className={`font-black text-lg ${task.done ? "line-through text-slate-500" : "text-white"}`}>{task.title}</h3>
-          <p className="text-sm text-slate-400 mt-1">{task.desc}</p>
-          <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2 mt-2 font-medium">{task.standard}</p>
+          <p className="text-sm text-slate-400 mt-1 leading-relaxed">{task.desc}</p>
+          <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2 mt-2 font-medium leading-relaxed">
+            完成標準：{task.standard}
+          </p>
+
+          <div className="flex gap-3 text-sm text-slate-400 mt-3 flex-wrap">
+            <span>+{task.coins} 金幣</span>
+            <span>+{task.exp} EXP</span>
+            <span>
+              {task.attr} +{task.attrExp}
+            </span>
+          </div>
         </div>
-        <button onClick={() => onDelete(task.id)} className="text-slate-600 hover:text-rose-400 text-sm p-1">✕</button>
+
+        <button onClick={() => onDelete(task.id)} className="text-slate-600 hover:text-rose-400 text-sm p-1 shrink-0">
+          ✕
+        </button>
       </div>
     </div>
   );
@@ -1028,7 +1072,9 @@ function Select({ label, value, onChange, options }) {
         className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-amber-400"
       >
         {options.map((opt) => (
-          <option key={opt} value={opt}>{opt}</option>
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
         ))}
       </select>
     </div>
