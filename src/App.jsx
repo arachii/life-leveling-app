@@ -105,6 +105,21 @@ const defaultTasks = [
     attrExp: 12,
     done: false,
   },
+{
+  id: 7,
+  title: "簡易健身",
+  desc: "伏地挺身、深蹲、散步、伸展都算。",
+  standard: "完成：運動5分鐘。漂亮完成：運動15分鐘以上。",
+  group: "支線",
+  type: "體能訓練",
+  difficulty: "D",
+  coins: 40,
+  exp: 25,
+  energy: 5,
+  attr: "體力",
+  attrExp: 20,
+  done: false,
+}
 ];
 
 const defaultRewards = [
@@ -266,7 +281,18 @@ const initialState = {
   totalCoinsEarned: 0,
   settledDays: 0,
   fireLog: [],
-  lastReport: "還沒有結算紀錄。",
+  lastReport: report,
+
+reportHistory: [
+  {
+    date: prev.day,
+    title: todayTitle,
+    done: done,
+    total: prev.tasks.length,
+    report: report,
+  },
+  ...(prev.reportHistory || []),
+].slice(0, 100),
   message: "v8 戰報美化版：每天不一定很強，但每天都要留下戰報。",
   tasks: defaultTasks,
   rewards: defaultRewards,
@@ -537,7 +563,7 @@ export default function LifeLevelingAppPrototype() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v8 戰報美化版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v9 紀錄成長版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -826,7 +852,34 @@ export default function LifeLevelingAppPrototype() {
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
-                <h3 className="font-black">最近一次戰報</h3>
+                <h3 className="font-black">最近一次戰報</h3><div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 mt-3">
+  <h3 className="font-black mb-3">歷史戰報</h3>
+
+  {(state.reportHistory || []).length === 0 ? (
+    <p className="text-slate-400 text-sm">
+      尚未產生歷史戰報
+    </p>
+  ) : (
+    (state.reportHistory || []).map((item, index) => (
+      <div
+        key={index}
+        className="border-b border-slate-700 py-3"
+      >
+        <div className="font-bold">
+          {item.date}
+        </div>
+
+        <div className="text-amber-300 text-sm">
+          {item.title}
+        </div>
+
+        <div className="text-slate-400 text-xs">
+          完成 {item.done}/{item.total}
+        </div>
+      </div>
+    ))
+  )}
+</div>
                 <p className="text-sm text-slate-300 mt-2 whitespace-pre-line leading-relaxed">{state.lastReport}</p>
               </div>
             </section>
@@ -881,7 +934,7 @@ export default function LifeLevelingAppPrototype() {
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                 <h3 className="font-black">版本</h3>
                 <p className="text-sm text-slate-300 leading-relaxed">
-                  v8 戰報美化版：首頁更漂亮、任務卡片更有層次、結算改成每日戰報、角色稱號更清楚。
+                  v9 紀錄成長版：保留歷史戰報，新增簡易健身任務。
                 </p>
               </div>
 
