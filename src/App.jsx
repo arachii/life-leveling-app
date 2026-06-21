@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-// 這個名稱從現在開始固定，不要因為升版而改掉。
+// v11 起固定使用同一個存檔名稱，後續版本不要改。
 const STORAGE_KEY = "life-leveling-main-save";
 
 const LEGACY_STORAGE_KEYS = [
+  "life-leveling-v10-auto-report",
   "life-leveling-v9-record-history",
   "life-leveling-v8-battle-report",
   "life-leveling-v7-growth",
@@ -126,16 +127,99 @@ const DEFAULT_TASKS = [
   },
 ];
 
+// v11 經濟系統：小獎每天一次、中獎每週兩次、大獎七天冷卻、基金不設冷卻。
 const DEFAULT_REWARDS = [
-  { id: "reward-1", title: "無罪惡感滑手機 15 分鐘", cost: 40, tag: "小爽" },
-  { id: "reward-2", title: "看小說 30 分鐘", cost: 100, tag: "小爽" },
-  { id: "reward-3", title: "打電動 1 小時", cost: 180, tag: "娛樂" },
-  { id: "reward-4", title: "300 元美食", cost: 500, tag: "美食" },
-  { id: "reward-5", title: "無罪惡感躺平半天", cost: 650, tag: "真爽" },
-  { id: "reward-6", title: "去打撞球一次", cost: 1000, tag: "真爽" },
-  { id: "reward-7", title: "還債基金 +100 元", cost: 1000, tag: "人生目標" },
-  { id: "reward-8", title: "家庭小旅行基金 +100 元", cost: 1000, tag: "家庭" },
-  { id: "reward-9", title: "三房兩廳基金 +100 元", cost: 1200, tag: "人生目標" },
+  {
+    id: "reward-1",
+    title: "無罪惡感滑手機 15 分鐘",
+    cost: 30,
+    tag: "小爽",
+    tier: "小獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-2",
+    title: "看小說 30 分鐘",
+    cost: 60,
+    tag: "小爽",
+    tier: "小獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-3",
+    title: "打電動 1 小時",
+    cost: 180,
+    tag: "娛樂",
+    tier: "中獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-4",
+    title: "300 元內美食",
+    cost: 450,
+    tag: "美食",
+    tier: "中獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-6",
+    title: "去打撞球一次",
+    cost: 350,
+    tag: "娛樂",
+    tier: "中獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-5",
+    title: "真正想吃的餐廳",
+    cost: 750,
+    tag: "真爽",
+    tier: "大獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-big-2",
+    title: "撞球＋美食半日放鬆",
+    cost: 800,
+    tag: "真爽",
+    tier: "大獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-big-3",
+    title: "完整娛樂日",
+    cost: 900,
+    tag: "真爽",
+    tier: "大獎",
+    isSystem: true,
+  },
+  {
+    id: "reward-7",
+    title: "還債基金 +100 元",
+    cost: 800,
+    tag: "人生目標",
+    tier: "目標基金",
+    cashValue: 100,
+    isSystem: true,
+  },
+  {
+    id: "reward-8",
+    title: "家庭小旅行基金 +100 元",
+    cost: 1000,
+    tag: "家庭",
+    tier: "目標基金",
+    cashValue: 100,
+    isSystem: true,
+  },
+  {
+    id: "reward-9",
+    title: "三房兩廳基金 +100 元",
+    cost: 1200,
+    tag: "人生目標",
+    tier: "目標基金",
+    cashValue: 100,
+    isSystem: true,
+  },
 ];
 
 const ENERGY_OPTIONS = [
@@ -175,6 +259,27 @@ function todayKey(date = new Date()) {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function parseDateKey(dateKey) {
+  const [y, m, d] = String(dateKey || todayKey()).split("-").map(Number);
+  return new Date(y || 2000, (m || 1) - 1, d || 1);
+}
+
+function weekKey(dateKey = todayKey()) {
+  const date = parseDateKey(dateKey);
+  const weekday = date.getDay();
+  const diffToMonday = weekday === 0 ? 6 : weekday - 1;
+  date.setDate(date.getDate() - diffToMonday);
+  return todayKey(date);
+}
+
+function dayDifference(fromKey, toKey = todayKey()) {
+  const from = parseDateKey(fromKey);
+  const to = parseDateKey(toKey);
+  const fromUtc = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
+  const toUtc = Date.UTC(to.getFullYear(), to.getMonth(), to.getDate());
+  return Math.floor((toUtc - fromUtc) / 86400000);
 }
 
 function clone(value) {
@@ -217,8 +322,10 @@ function createInitialState() {
     settledDays: 0,
     fireLog: [],
     reportHistory: [],
+    redemptionHistory: [],
+    goalFunds: {},
     lastReport: "尚未有自動戰報。",
-    message: "v10 自動戰報版：跨日後會自動保存昨天的紀錄。",
+    message: "v11 經濟平衡版：小獎每日一次、中獎每週兩次、大獎七天冷卻。",
     tasks: clone(DEFAULT_TASKS),
     rewards: clone(DEFAULT_REWARDS),
     attrs: { 體力: 0, 智力: 0, 財力: 0, 家庭: 0, 心力: 0, 魅力: 0 },
@@ -248,6 +355,38 @@ function mergeTasks(savedTasks) {
   return [...defaults, ...customTasks];
 }
 
+function isSameDefaultReward(reward, base) {
+  return String(reward?.id) === String(base.id) || reward?.title === base.title;
+}
+
+function normalizeReward(reward) {
+  const tier = reward?.tier || "小獎";
+  return {
+    id: reward?.id || `reward-${Date.now()}`,
+    title: reward?.title || "未命名獎勵",
+    cost: Number(reward?.cost || 0),
+    tag: reward?.tag || "小爽",
+    tier,
+    cashValue: Number(reward?.cashValue || 0),
+    isSystem: Boolean(reward?.isSystem),
+  };
+}
+
+function mergeRewards(savedRewards) {
+  const source = Array.isArray(savedRewards) ? savedRewards : [];
+
+  const defaults = DEFAULT_REWARDS.map((base) => {
+    const old = source.find((reward) => isSameDefaultReward(reward, base));
+    return old ? { ...base, isSystem: true } : clone(base);
+  });
+
+  const customs = source
+    .filter((reward) => !DEFAULT_REWARDS.some((base) => isSameDefaultReward(reward, base)))
+    .map((reward) => ({ ...normalizeReward(reward), isSystem: false }));
+
+  return [...defaults, ...customs];
+}
+
 function normalizeReportHistory(history) {
   if (!Array.isArray(history)) return [];
 
@@ -264,16 +403,35 @@ function normalizeReportHistory(history) {
     }));
 }
 
+function normalizeRedemptionHistory(history) {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .filter((item) => item && item.date)
+    .map((item) => ({
+      id: item.id || `history-${item.date}-${item.title || "reward"}`,
+      date: item.date,
+      rewardId: item.rewardId || "",
+      title: item.title || "未命名獎勵",
+      tier: item.tier || "小獎",
+      cost: Number(item.cost || 0),
+      cashValue: Number(item.cashValue || 0),
+    }))
+    .slice(0, 300);
+}
+
 function normalizeState(raw) {
   const initial = createInitialState();
   const state = { ...initial, ...(raw || {}) };
 
   state.day = typeof state.day === "string" ? state.day : todayKey();
   state.tasks = mergeTasks(state.tasks);
-  state.rewards = Array.isArray(state.rewards) ? state.rewards : clone(DEFAULT_REWARDS);
+  state.rewards = mergeRewards(state.rewards);
   state.attrs = { ...initial.attrs, ...(state.attrs || {}) };
   state.fireLog = Array.isArray(state.fireLog) ? state.fireLog : [];
   state.reportHistory = normalizeReportHistory(state.reportHistory);
+  state.redemptionHistory = normalizeRedemptionHistory(state.redemptionHistory);
+  state.goalFunds = state.goalFunds && typeof state.goalFunds === "object" ? state.goalFunds : {};
 
   [
     "coins",
@@ -341,21 +499,11 @@ function getBattleMessage(tasks) {
   const family = tasks.some((task) => task.type === "家庭守護" && task.done);
   const fitness = tasks.some((task) => task.type === "體能訓練" && task.done);
 
-  if (total > 0 && done === total) {
-    return "今日全清，狀態漂亮。你不是靠爆發，是靠把每條線都接住。";
-  }
-  if (uber && estate && family && fitness) {
-    return "四線守住：現金流、房仲、家庭、身體都有碰到。";
-  }
-  if (uber && estate && family) {
-    return "今日節奏很好：現金流、房仲、家庭都有碰到。";
-  }
-  if (uber && estate) {
-    return "雙線推進成功：今天現金流與房仲都沒有斷。";
-  }
-  if (fitness) {
-    return "身體有開機。哪怕只動 5 分鐘，也是在防止自己停機。";
-  }
+  if (total > 0 && done === total) return "今日全清，狀態漂亮。你不是靠爆發，是靠把每條線都接住。";
+  if (uber && estate && family && fitness) return "四線守住：現金流、房仲、家庭、身體都有碰到。";
+  if (uber && estate && family) return "今日節奏很好：現金流、房仲、家庭都有碰到。";
+  if (uber && estate) return "雙線推進成功：今天現金流與房仲都沒有斷。";
+  if (fitness) return "身體有開機。哪怕只動 5 分鐘，也是在防止自己停機。";
   if (done >= 3) return "今天有穩住。不是大爆發，但節奏有回來。";
   if (done >= 1) return "火種未滅。至少有做一件事，今天就不是歸零。";
   return "還沒開局。先完成一個 E 級事件，今天就不算完全掉線。";
@@ -473,11 +621,14 @@ function groupClass(group) {
   return map[group] || "bg-slate-100 text-slate-700";
 }
 
-function rewardClass(tag) {
-  if (tag === "真爽" || tag === "人生目標") return "bg-amber-100 text-amber-800";
-  if (tag === "家庭") return "bg-emerald-100 text-emerald-800";
-  if (tag === "美食") return "bg-rose-100 text-rose-700";
-  return "bg-purple-100 text-purple-700";
+function tierClass(tier) {
+  const map = {
+    小獎: "bg-emerald-100 text-emerald-800",
+    中獎: "bg-blue-100 text-blue-800",
+    大獎: "bg-amber-100 text-amber-800",
+    目標基金: "bg-purple-100 text-purple-800",
+  };
+  return map[tier] || "bg-slate-100 text-slate-700";
 }
 
 function taskToneClass(group, done) {
@@ -485,6 +636,89 @@ function taskToneClass(group, done) {
   if (group === "主線") return "bg-slate-800 border-amber-400/35";
   if (group === "隨機") return "bg-slate-800 border-purple-400/35";
   return "bg-slate-800 border-slate-700";
+}
+
+function rewardRuleText(tier) {
+  if (tier === "小獎") return "規則：全體小獎每日最多兌換 1 次。";
+  if (tier === "中獎") return "規則：全體中獎每週最多兌換 2 次。";
+  if (tier === "大獎") return "規則：兌換任一大獎後，所有大獎冷卻 7 天。";
+  return "目標基金：兌換後，建議真的把對應現金轉入專用帳戶。";
+}
+
+function getRewardStatus(reward, redemptionHistory) {
+  const tier = reward.tier || "小獎";
+  const today = todayKey();
+
+  if (tier === "小獎") {
+    const count = redemptionHistory.filter(
+      (item) => item.tier === "小獎" && item.date === today
+    ).length;
+
+    return count >= 1
+      ? { allowed: false, reason: "今天的小獎已兌換過，明天再換。" }
+      : { allowed: true, reason: "今天還可兌換 1 次小獎。" };
+  }
+
+  if (tier === "中獎") {
+    const currentWeek = weekKey(today);
+    const count = redemptionHistory.filter(
+      (item) => item.tier === "中獎" && weekKey(item.date) === currentWeek
+    ).length;
+
+    return count >= 2
+      ? { allowed: false, reason: "本週中獎已兌換 2 次，下週再來。" }
+      : { allowed: true, reason: `本週還可兌換 ${2 - count} 次中獎。` };
+  }
+
+  if (tier === "大獎") {
+    const latest = redemptionHistory
+      .filter((item) => item.tier === "大獎")
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+
+    if (!latest) return { allowed: true, reason: "大獎可兌換。" };
+
+    const elapsed = dayDifference(latest.date, today);
+    if (elapsed < 7) {
+      return {
+        allowed: false,
+        reason: `大獎冷卻中，還要 ${7 - elapsed} 天。`,
+      };
+    }
+
+    return { allowed: true, reason: "大獎冷卻結束，可兌換。" };
+  }
+
+  return { allowed: true, reason: "可兌換，並建議同步做真實資金轉移。" };
+}
+
+function getTierUsage(redemptionHistory) {
+  const today = todayKey();
+  const thisWeek = weekKey(today);
+  const smallToday = redemptionHistory.filter(
+    (item) => item.tier === "小獎" && item.date === today
+  ).length;
+  const mediumWeek = redemptionHistory.filter(
+    (item) => item.tier === "中獎" && weekKey(item.date) === thisWeek
+  ).length;
+  const latestBig = redemptionHistory
+    .filter((item) => item.tier === "大獎")
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+
+  const bigRemain = latestBig ? Math.max(0, 7 - dayDifference(latestBig.date, today)) : 0;
+
+  return {
+    smallToday,
+    mediumWeek,
+    bigRemain,
+  };
+}
+
+function groupRewardsByTier(rewards) {
+  const order = ["小獎", "中獎", "大獎", "目標基金"];
+  return order.map((tier) => ({
+    tier,
+    rewards: rewards.filter((reward) => reward.tier === tier),
+  }));
 }
 
 export default function LifeLevelingAppPrototype() {
@@ -505,8 +739,10 @@ export default function LifeLevelingAppPrototype() {
   });
   const [newReward, setNewReward] = useState({
     title: "",
-    cost: 100,
+    cost: 60,
     tag: "小爽",
+    tier: "小獎",
+    cashValue: 0,
   });
 
   useEffect(() => {
@@ -561,14 +797,15 @@ export default function LifeLevelingAppPrototype() {
   const dailyTitle = getDailyTitle(state.tasks);
   const battleMessage = getBattleMessage(state.tasks);
   const todayPreview = buildReport(state);
+  const tierUsage = getTierUsage(state.redemptionHistory);
+  const rewardGroups = groupRewardsByTier(state.rewards);
+  const maxDailyCoins = DEFAULT_TASKS.reduce((sum, task) => sum + task.coins, 0);
+  const reserveHint = Math.floor(state.coins * 0.3);
 
   function patch(updater) {
     setState((previous) => {
-      const current =
-        previous.day === todayKey() ? previous : rolloverToToday(previous);
-      return typeof updater === "function"
-        ? updater(current)
-        : { ...current, ...updater };
+      const current = previous.day === todayKey() ? previous : rolloverToToday(previous);
+      return typeof updater === "function" ? updater(current) : { ...current, ...updater };
     });
   }
 
@@ -587,12 +824,10 @@ export default function LifeLevelingAppPrototype() {
         todayCoins: previous.todayCoins + Number(task.coins || 0),
         todayExp: previous.todayExp + Number(task.exp || 0),
         totalTasks: previous.totalTasks + 1,
-        totalCoinsEarned:
-          previous.totalCoinsEarned + Number(task.coins || 0),
+        totalCoinsEarned: previous.totalCoinsEarned + Number(task.coins || 0),
         attrs: {
           ...previous.attrs,
-          [task.attr]:
-            Number(previous.attrs[task.attr] || 0) + Number(task.attrExp || 10),
+          [task.attr]: Number(previous.attrs[task.attr] || 0) + Number(task.attrExp || 10),
         },
         message: `完成「${task.title}」：+${task.coins} 金幣，${task.attr} +${task.attrExp || 10}。`,
       };
@@ -655,21 +890,25 @@ export default function LifeLevelingAppPrototype() {
     const title = newReward.title.trim();
     if (!title) return;
 
+    const id = `reward-${Date.now()}`;
     patch((previous) => ({
       ...previous,
       rewards: [
         ...previous.rewards,
         {
-          id: `reward-${Date.now()}`,
+          id,
           title,
-          cost: Number(newReward.cost || 100),
+          cost: Number(newReward.cost || 60),
           tag: newReward.tag || "小爽",
+          tier: newReward.tier || "小獎",
+          cashValue: Number(newReward.cashValue || 0),
+          isSystem: false,
         },
       ],
-      message: `已新增獎勵：「${title}」。`,
+      message: `已新增 ${newReward.tier}：「${title}」。`,
     }));
 
-    setNewReward({ title: "", cost: 100, tag: "小爽" });
+    setNewReward({ title: "", cost: 60, tag: "小爽", tier: "小獎", cashValue: 0 });
     setRewardFormOpen(false);
   }
 
@@ -677,12 +916,18 @@ export default function LifeLevelingAppPrototype() {
     patch((previous) => ({
       ...previous,
       rewards: previous.rewards.filter((reward) => reward.id !== id),
-      message: "已刪除一個獎勵。",
+      message: "已刪除自訂獎勵。",
     }));
   }
 
   function redeemReward(reward) {
     patch((previous) => {
+      const status = getRewardStatus(reward, previous.redemptionHistory);
+
+      if (!status.allowed) {
+        return { ...previous, message: status.reason };
+      }
+
       if (previous.coins < reward.cost) {
         return {
           ...previous,
@@ -690,12 +935,40 @@ export default function LifeLevelingAppPrototype() {
         };
       }
 
+      const record = {
+        id: `redeem-${Date.now()}`,
+        date: todayKey(),
+        rewardId: reward.id,
+        title: reward.title,
+        tier: reward.tier || "小獎",
+        cost: Number(reward.cost || 0),
+        cashValue: Number(reward.cashValue || 0),
+      };
+
+      const nextGoalFunds = { ...previous.goalFunds };
+      if (reward.tier === "目標基金") {
+        nextGoalFunds[reward.id] = Number(nextGoalFunds[reward.id] || 0) + Number(reward.cashValue || 0);
+      }
+
+      const goalMessage = reward.tier === "目標基金"
+        ? `已兌換：${reward.title}。記得真的把 ${reward.cashValue || 0} 元移到對應基金。`
+        : `已兌換：${reward.title}。這是你賺來的。`;
+
       return {
         ...previous,
-        coins: previous.coins - reward.cost,
-        message: `已兌換：${reward.title}。這是你賺來的。`,
+        coins: previous.coins - Number(reward.cost || 0),
+        redemptionHistory: [record, ...previous.redemptionHistory].slice(0, 300),
+        goalFunds: nextGoalFunds,
+        message: goalMessage,
       };
     });
+  }
+
+  function useRecoveryCard() {
+    patch((previous) => ({
+      ...previous,
+      message: "恢復卡已啟用：今天可以休息、降速、睡覺，不用再拿金幣交換休息資格。",
+    }));
   }
 
   function resetTodayTasks() {
@@ -712,7 +985,7 @@ export default function LifeLevelingAppPrototype() {
   }
 
   function hardReset() {
-    if (!window.confirm("確定全部重來？金幣、等級、歷史戰報都會清空。")) return;
+    if (!window.confirm("確定全部重來？金幣、等級、歷史戰報、獎勵紀錄都會清空。")) return;
     setState(createInitialState());
     setTab("today");
   }
@@ -723,7 +996,7 @@ export default function LifeLevelingAppPrototype() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v10 自動戰報版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v11 經濟平衡版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -762,17 +1035,11 @@ export default function LifeLevelingAppPrototype() {
           <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 shadow-[0_12px_30px_rgba(0,0,0,0.22)]">
             <div className="flex items-center justify-between gap-2 mb-2">
               <p className="text-sm text-slate-300">今日戰報</p>
-              <span className="text-xs px-2 py-1 rounded-full bg-amber-300/15 text-amber-300 border border-amber-300/20">
-                {dailyTitle}
-              </span>
+              <span className="text-xs px-2 py-1 rounded-full bg-amber-300/15 text-amber-300 border border-amber-300/20">{dailyTitle}</span>
             </div>
             <p className="text-base font-bold text-white leading-relaxed">{battleMessage}</p>
-            <p className="text-xs text-slate-500 mt-3">
-              自動封存已開啟：跨日後，昨天的紀錄會自動保存。
-            </p>
-            {isSurvival && (
-              <p className="text-sm text-amber-300 mt-2">保命模式已啟動：今天只要求不斷線。</p>
-            )}
+            <p className="text-xs text-slate-500 mt-3">自動封存已開啟：跨日後，昨天的紀錄會自動保存。</p>
+            {isSurvival && <p className="text-sm text-amber-300 mt-2">保命模式已啟動：今天只要求不斷線。</p>}
           </div>
         </div>
 
@@ -788,11 +1055,7 @@ export default function LifeLevelingAppPrototype() {
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`rounded-2xl px-3 py-3 text-sm font-black transition ${
-                tab === key
-                  ? "bg-amber-300 text-slate-950 shadow-[0_0_18px_rgba(251,191,36,0.22)]"
-                  : "bg-slate-800 text-slate-300 border border-slate-700"
-              }`}
+              className={`rounded-2xl px-3 py-3 text-sm font-black transition ${tab === key ? "bg-amber-300 text-slate-950 shadow-[0_0_18px_rgba(251,191,36,0.22)]" : "bg-slate-800 text-slate-300 border border-slate-700"}`}
             >
               {label}
             </button>
@@ -804,13 +1067,11 @@ export default function LifeLevelingAppPrototype() {
             <section className="space-y-3">
               <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-black">今日事件</h2>
-                <button onClick={resetTodayTasks} className="text-slate-300 rounded-full px-3 py-2 hover:bg-slate-800 flex items-center gap-1">
-                  ↻ 重置
-                </button>
+                <button onClick={resetTodayTasks} className="text-slate-300 rounded-full px-3 py-2 hover:bg-slate-800 flex items-center gap-1">↻ 重置</button>
               </div>
 
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 text-sm text-slate-300 leading-relaxed">
-                今天不用完美，只求不掉線：UberEats 有出車一點、房仲有碰一下、家庭有顧到、身體有動一下。
+                正常日目標約 150～220 金幣；全部完成上限 {maxDailyCoins}。今天不用全清，只求主線不掉線。
               </div>
 
               {visibleTasks.map((task) => (
@@ -833,13 +1094,6 @@ export default function LifeLevelingAppPrototype() {
                   <button onClick={addTask} className="w-full bg-amber-300 text-slate-950 rounded-2xl py-3 font-black">加入事件</button>
                 </div>
               )}
-
-              <div className="bg-amber-300/10 border border-amber-300/20 rounded-2xl p-4">
-                <p className="text-sm font-black text-amber-300">自動戰報已開啟</p>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  今天不用手動結算。跨日後，系統會自動把今天的進度、金幣、EXP、稱號封存到紀錄頁。
-                </p>
-              </div>
             </section>
           )}
 
@@ -847,18 +1101,12 @@ export default function LifeLevelingAppPrototype() {
             <section className="space-y-3">
               <h2 className="text-2xl font-black">今天的能量</h2>
               <p className="text-slate-400 text-sm">先承認狀態，再安排事件。狀態低不是失敗，是換打法。</p>
+
               {ENERGY_OPTIONS.map((option) => (
                 <button
                   key={option.value}
-                  onClick={() => patch({
-                    energy: option.value,
-                    message: option.value <= 30 ? "已切換成保命模式，今天只求不斷線。" : `今日能量設定為 ${option.value}。`,
-                  })}
-                  className={`w-full text-left rounded-3xl border p-4 flex justify-between items-center ${
-                    state.energy === option.value
-                      ? "bg-amber-300 text-slate-950 border-amber-200"
-                      : "bg-slate-800 text-slate-100 border-slate-700"
-                  }`}
+                  onClick={() => patch({ energy: option.value, message: option.value <= 30 ? "已切換成保命模式，今天只求不斷線。" : `今日能量設定為 ${option.value}。` })}
+                  className={`w-full text-left rounded-3xl border p-4 flex justify-between items-center ${state.energy === option.value ? "bg-amber-300 text-slate-950 border-amber-200" : "bg-slate-800 text-slate-100 border-slate-700"}`}
                 >
                   <div>
                     <h3 className="font-black">{option.label}</h3>
@@ -867,6 +1115,12 @@ export default function LifeLevelingAppPrototype() {
                   <div className="text-3xl font-black">{option.value}</div>
                 </button>
               ))}
+
+              <div className="bg-emerald-950/40 border border-emerald-700 rounded-3xl p-4">
+                <h3 className="font-black text-emerald-200">恢復卡：不用花金幣</h3>
+                <p className="text-sm text-slate-300 mt-2 leading-relaxed">睡覺、躺平、看醫生、減量，不是獎勵，也不需要先賺到資格。能量低時直接啟用。</p>
+                <button onClick={useRecoveryCard} className="w-full mt-3 rounded-2xl bg-emerald-300 text-emerald-950 h-11 font-black">啟用恢復卡</button>
+              </div>
             </section>
           )}
 
@@ -876,29 +1130,55 @@ export default function LifeLevelingAppPrototype() {
                 <h2 className="text-2xl font-black">獎勵商店</h2>
                 <button onClick={() => setRewardFormOpen((value) => !value)} className="rounded-full bg-slate-800 px-3 py-2 text-sm border border-slate-700">＋ 新增</button>
               </div>
-              <p className="text-slate-400 text-sm">金幣要能換到真正想要的東西，才會有動力。</p>
+
+              <div className="grid grid-cols-2 gap-3">
+                <InfoBox label="建議保留" value={`${reserveHint} 金幣`} note="約現有金幣的 30%" />
+                <InfoBox label="今日收入" value={`+${state.todayCoins}`} note="正常日 150～220" />
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
+                <h3 className="font-black">本期兌換額度</h3>
+                <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+                  <MiniRule label="小獎" value={`${tierUsage.smallToday}/1`} note="今天" />
+                  <MiniRule label="中獎" value={`${tierUsage.mediumWeek}/2`} note="本週" />
+                  <MiniRule label="大獎" value={tierUsage.bigRemain ? `${tierUsage.bigRemain}天` : "可換"} note="冷卻" />
+                </div>
+              </div>
 
               {rewardFormOpen && (
                 <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                   <Input label="獎勵名稱" value={newReward.title} onChange={(value) => setNewReward({ ...newReward, title: value })} placeholder="例如：吃一餐牛排" />
                   <Input label="花費金幣" type="number" value={newReward.cost} onChange={(value) => setNewReward({ ...newReward, cost: value })} />
+                  <Select label="獎勵層級" value={newReward.tier} onChange={(value) => setNewReward({ ...newReward, tier: value })} options={["小獎", "中獎", "大獎", "目標基金"]} />
                   <Select label="標籤" value={newReward.tag} onChange={(value) => setNewReward({ ...newReward, tag: value })} options={["小爽", "娛樂", "真爽", "美食", "家庭", "人生目標"]} />
+                  {newReward.tier === "目標基金" && <Input label="實際轉入金額" type="number" value={newReward.cashValue} onChange={(value) => setNewReward({ ...newReward, cashValue: value })} placeholder="例如：100" />}
                   <button onClick={addReward} className="w-full bg-amber-300 text-slate-950 rounded-2xl py-3 font-black">加入獎勵</button>
                 </div>
               )}
 
-              {state.rewards.map((reward) => (
-                <div key={reward.id} className="bg-slate-800 border border-slate-700 rounded-3xl p-4 flex justify-between items-center gap-3">
-                  <div className="min-w-0">
-                    <span className={`text-xs px-2 py-1 rounded-full font-bold ${rewardClass(reward.tag)}`}>{reward.tag}</span>
-                    <h3 className="font-bold mt-2 break-words">{reward.title}</h3>
-                    <p className="text-sm text-slate-400">需要 {reward.cost} 金幣</p>
+              {rewardGroups.map(({ tier, rewards }) => (
+                rewards.length > 0 && (
+                  <div key={tier} className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h3 className="font-black">{tier}</h3>
+                      <span className="text-xs text-slate-500">{rewardRuleText(tier)}</span>
+                    </div>
+                    {rewards.map((reward) => {
+                      const status = getRewardStatus(reward, state.redemptionHistory);
+                      const goalTotal = Number(state.goalFunds[reward.id] || 0);
+                      return (
+                        <RewardCard
+                          key={reward.id}
+                          reward={reward}
+                          status={status}
+                          goalTotal={goalTotal}
+                          onRedeem={redeemReward}
+                          onDelete={deleteReward}
+                        />
+                      );
+                    })}
                   </div>
-                  <div className="flex gap-2 shrink-0">
-                    <button onClick={() => redeemReward(reward)} className="rounded-2xl bg-amber-300 text-slate-950 px-3 py-2 font-black">兌換</button>
-                    <button onClick={() => deleteReward(reward.id)} className="rounded-2xl bg-slate-700 text-slate-300 px-3 py-2">刪</button>
-                  </div>
-                </div>
+                )
               ))}
             </section>
           )}
@@ -918,13 +1198,6 @@ export default function LifeLevelingAppPrototype() {
                 <p className="text-amber-300 text-sm mt-2">{todayPreview.title}</p>
                 <p className="text-sm text-slate-400 mt-1">完成 {todayPreview.done}/{todayPreview.total}，目前 +{todayPreview.coins} 金幣 / +{todayPreview.exp} EXP</p>
                 <p className="text-xs text-slate-500 mt-2">這筆會在跨日後自動封存到歷史戰報。</p>
-              </div>
-
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
-                <h3 className="font-black">自動保存規則</h3>
-                <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-                  App 開著跨過午夜後會自動封存；如果 App 關掉，隔天第一次打開時也會先封存昨天。
-                </p>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
@@ -948,11 +1221,7 @@ export default function LifeLevelingAppPrototype() {
                     {state.reportHistory.map((item, index) => {
                       const isOpen = expandedReportDate === item.date;
                       return (
-                        <button
-                          key={`${item.date}-${index}`}
-                          onClick={() => setExpandedReportDate(isOpen ? "" : item.date)}
-                          className="w-full text-left border-b border-slate-700 pb-3 last:border-0"
-                        >
+                        <button key={`${item.date}-${index}`} onClick={() => setExpandedReportDate(isOpen ? "" : item.date)} className="w-full text-left border-b border-slate-700 pb-3 last:border-0">
                           <div className="flex justify-between items-center gap-3">
                             <span className="font-bold text-white text-sm">{item.date}</span>
                             <span className="text-slate-400 text-xs shrink-0">完成 {item.done}/{item.total}</span>
@@ -965,11 +1234,6 @@ export default function LifeLevelingAppPrototype() {
                     })}
                   </div>
                 )}
-              </div>
-
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
-                <h3 className="font-black">最近一次封存戰報</h3>
-                <p className="text-sm text-slate-300 mt-2 whitespace-pre-line leading-relaxed">{state.lastReport}</p>
               </div>
             </section>
           )}
@@ -1013,7 +1277,7 @@ export default function LifeLevelingAppPrototype() {
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
                 <h3 className="font-black">版本</h3>
-                <p className="text-sm text-slate-300 leading-relaxed mt-2">v10 自動戰報版：跨日自動封存，不再需要每天手動儲存紀錄。</p>
+                <p className="text-sm text-slate-300 leading-relaxed mt-2">v11 經濟平衡版：每日金幣上限 290，獎勵分小、中、大、目標基金，並加入兌換冷卻與使用額度。</p>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
@@ -1042,9 +1306,7 @@ function TaskCard({ task, onComplete, onDelete }) {
       <div className="flex gap-3 items-start">
         <button
           onClick={() => onComplete(task.id)}
-          className={`mt-1 w-10 h-10 rounded-full flex items-center justify-center border text-lg font-black shrink-0 ${
-            task.done ? "bg-emerald-400 border-emerald-300 text-slate-950" : "border-slate-500 text-slate-500"
-          }`}
+          className={`mt-1 w-10 h-10 rounded-full flex items-center justify-center border text-lg font-black shrink-0 ${task.done ? "bg-emerald-400 border-emerald-300 text-slate-950" : "border-slate-500 text-slate-500"}`}
         >
           ✓
         </button>
@@ -1073,6 +1335,37 @@ function TaskCard({ task, onComplete, onDelete }) {
   );
 }
 
+function RewardCard({ reward, status, goalTotal, onRedeem, onDelete }) {
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
+      <div className="flex justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex gap-2 flex-wrap">
+            <span className={`text-xs px-2 py-1 rounded-full font-bold ${tierClass(reward.tier)}`}>{reward.tier}</span>
+            <span className="text-xs px-2 py-1 rounded-full bg-slate-700 text-slate-300">{reward.tag}</span>
+          </div>
+          <h3 className="font-black mt-2 break-words">{reward.title}</h3>
+          <p className="text-sm text-slate-400 mt-1">需要 {reward.cost} 金幣</p>
+          <p className={`text-xs mt-2 ${status.allowed ? "text-emerald-300" : "text-rose-300"}`}>{status.reason}</p>
+          {reward.tier === "目標基金" && (
+            <p className="text-xs text-amber-300 mt-1">已累積換算：{goalTotal} 元</p>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2 shrink-0">
+          <button
+            onClick={() => onRedeem(reward)}
+            className={`rounded-2xl px-3 py-2 font-black ${status.allowed ? "bg-amber-300 text-slate-950" : "bg-slate-700 text-slate-400"}`}
+          >
+            兌換
+          </button>
+          {!reward.isSystem && <button onClick={() => onDelete(reward.id)} className="rounded-2xl bg-slate-700 text-slate-300 px-3 py-2">刪</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({ label, value }) {
   return (
     <div className="bg-slate-950/50 border border-slate-800 rounded-2xl p-3 text-center">
@@ -1087,6 +1380,26 @@ function RecordBox({ label, value }) {
     <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 text-center">
       <p className="text-xs text-slate-500 font-bold">{label}</p>
       <p className="text-lg font-black text-white mt-1">{value}</p>
+    </div>
+  );
+}
+
+function InfoBox({ label, value, note }) {
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-2xl p-3">
+      <p className="text-xs text-slate-400">{label}</p>
+      <p className="font-black text-lg mt-1">{value}</p>
+      <p className="text-[11px] text-slate-500 mt-1">{note}</p>
+    </div>
+  );
+}
+
+function MiniRule({ label, value, note }) {
+  return (
+    <div className="bg-slate-950 border border-slate-800 rounded-2xl p-2">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className="font-black mt-1">{value}</p>
+      <p className="text-[10px] text-slate-500 mt-1">{note}</p>
     </div>
   );
 }
