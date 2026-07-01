@@ -1,18 +1,22 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /*
- * 人生打怪村 v12：待辦整合＋村長每日賞賜
+ * 人生打怪村 v12.6：本地智慧村長＋明日開局
  *
  * 設計原則：
  * 1. 人生主線仍給金幣；每日待辦不給金幣，只累積村民印記（每日最多 3 枚）。
- * 2. 每天一張「村長封印賞賜卡」；完成條件後解鎖，再手動領取。
- * 3. 這是本地規則式 AI 村長：不需要 API Key、不會暴露金鑰，也可先驗證是否有感。
- * 4. 繼續沿用固定存檔 key，不切斷 v9～v11 的紀錄。
+ * 2. 每天只有一張封印賞賜卡，依日期固定，不可用重整洗卡。
+ * 3. 村長會依能量、主線、待辦、核心三線與近期火種，動態產生「村長觀察」與賞賜理由。
+ * 4. 這是零成本、本地規則式的智慧村長：不使用 API Key、不連外、不收集資料。
+ * 5. 新增明日待辦與未完成待辦：明日跨日自動移入今日；今天未完成的項目不強塞進明天。
+ * 6. 繼續沿用固定存檔 key，不切斷 v9～v12 的紀錄。
  */
 
 const STORAGE_KEY = "life-leveling-main-save";
 const DAILY_COIN_CAP = 300;
 const MAX_REPORTS = 100;
+const VILLAGE_SYSTEM_VERSION = "12.6";
+const TOMORROW_TODO_LIMIT = 5;
 
 const OLD_STORAGE_KEYS = [
   "life-leveling-v11-economy",
@@ -359,9 +363,8 @@ function rewardPoolFromDate(day) {
   return "ticket";
 }
 
-function createDailyReward(day = todayKey()) {
-  const poolName = rewardPoolFromDate(day);
-  const pool = rewardPools[poolName];
+function createRewardFromPool(day, poolName, extra = {}) {
+  const pool = rewardPools[poolName] || rewardPools.small;
   const item = deterministicPick(pool, hashString(`${day}-${poolName}`));
 
   return {
@@ -370,7 +373,252 @@ function createDailyReward(day = todayKey()) {
     pool: poolName,
     claimed: false,
     claimedAt: "",
+    locked: false,
+    lockedAt: "",
+    issueMode: "每日抽選",
+    ...extra,
   };
+}
+
+function createDailyReward(day = todayKey()) {
+  return createRewardFromPool(day, rewardPoolFromDate(day));
+}
+
+function getRecentFireStreak(fireLog, referenceDay = todayKey()) {
+  const logs = Array.isArray(fireLog) ? fireLog : [];
+  let streak = 0;
+  const cursor = new Date(`${referenceDay}T12:00:00`);
+  cursor.setDate(cursor.getDate() - 1);
+
+  while (streak < 30) {
+    const key = todayKey(cursor);
+    const hasFire = logs.some((item) => item.date === key && item.done);
+    if (!hasFire) break;
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  return streak;
+}
+
+function pickStableLine(lines, seed) {
+  return deterministicPick(lines, hashString(seed));
+}
+
+function getVillageInsight(state) {
+  const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+  const todos = Array.isArray(state.todos) ? state.todos : [];
+  const mainDone = getMainDoneCount(tasks);
+  const todoDone = getTodoDoneCount(todos);
+  const seals = getSeals(todos);
+  const doneCount = tasks.filter((task) => task.done).length;
+  const streak = getRecentFireStreak(state.fireLog, state.day);
+  const uberDone = tasks.some((task) => task.type === "UberEats" && task.done);
+  const estateDone = tasks.some((task) => task.type === "房仲業務" && task.done);
+  const familyDone = tasks.some((task) => task.type === "家庭守護" && task.done);
+  const fitnessDone = tasks.some((task) => task.type === "體能訓練" && task.done);
+  const coreTriple = hasCoreTriple(tasks);
+  const seedBase = `${state.day}-${mainDone}-${todoDone}-${state.energy}-${streak}`;
+
+  if (state.energy <= 30) {
+    if (doneCount || todoDone) {
+      return {
+        key: "survival-progress",
+        title: "保命模式守住了",
+        label: "先活下來，再談效率",
+        message: pickStableLine([
+          "今天不需要證明你多厲害。你願意完成一件事，就已經把自己從停機邊緣拉回來。",
+          "低能量時還有一點推進，比硬撐到崩掉更有價值。今天先把火種保住。",
+          "你沒有逃掉今天。現在最重要的不是加碼，而是把剩下的力氣留給明天。",
+        ], `${seedBase}-survival-progress`),
+        nextStep: "賞賜領完後，允許自己收工；今天不再追加硬任務。",
+        streak,
+      };
+    }
+
+    return {
+      key: "survival-start",
+      title: "村長先幫你降難度",
+      label: "只要一件事就夠",
+      message: pickStableLine([
+        "你現在不是懶，是能量太低。村長今天只要你完成一件最小的事。",
+        "先別規劃一整天。喝水、洗臉、回一則訊息，任一件完成就算重新上線。",
+        "今天的勝利條件很小：讓自己不要完全消失。",
+      ], `${seedBase}-survival-start`),
+      nextStep: "先完成「今日保命開局」或一件待辦，別跟明天預支力氣。",
+      streak,
+    };
+  }
+
+  if (coreTriple && todoDone >= 3) {
+    return {
+      key: "high-output",
+      title: "高輸出日，村長加碼",
+      label: "核心三線＋村務三印記",
+      message: pickStableLine([
+        "UberEats、房仲、身體三條核心線都碰到了，雜事也沒有繼續堆著。這不是忙，是穩定的推進。",
+        "今天你不只完成任務，還把生活裡容易卡住的小事清掉了。這種日子值得被記住。",
+        "現金流、職涯、身體與村務同時往前，這是你最需要複製的節奏。",
+      ], `${seedBase}-high-output`),
+      nextStep: "領取加碼賞賜後，今晚只做恢復；把好節奏留給明天。",
+      streak,
+    };
+  }
+
+  if (uberDone && estateDone && (familyDone || fitnessDone)) {
+    return {
+      key: "multi-line",
+      title: "多線沒有斷",
+      label: "現金流、房仲，加上生活主線",
+      message: pickStableLine([
+        "你今天同時碰到收入、工作與生活，這比只衝一件事更接近你要的長期人生。",
+        "不是每件事都做滿，但重要的線都沒有放掉。這種穩定，比偶爾爆發更難也更值錢。",
+        "今天的你沒有只顧眼前的錢，也沒有把家和身體整個丟掉。這就是在修復生活節奏。",
+      ], `${seedBase}-multi-line`),
+      nextStep: "補一到兩件待辦，讓賞賜條件自己打開。",
+      streak,
+    };
+  }
+
+  if (uberDone && estateDone) {
+    return {
+      key: "cashflow-estate",
+      title: "收入雙線推進",
+      label: "UberEats＋房仲都沒斷",
+      message: pickStableLine([
+        "今天現金流和房仲戰線都沒有斷。這不是立刻翻盤，但每一次不斷線都在幫未來累積機會。",
+        "你把短期現金流和長期專業同時碰了一下，這是比單純忙碌更有效的安排。",
+        "今天有把錢和職涯兩條線接住。接下來只要清兩件小待辦，整天就更完整。",
+      ], `${seedBase}-cashflow-estate`),
+      nextStep: "新增或完成兩件小待辦，讓腦中的雜音少一點。",
+      streak,
+    };
+  }
+
+  if (todoDone >= 3 && mainDone >= 1) {
+    return {
+      key: "village-clear",
+      title: "村務清得很乾淨",
+      label: "三枚印記＋主線已動",
+      message: pickStableLine([
+        "你把容易拖著的生活小事清掉了，也沒有忘記人生主線。這種日子看似普通，其實很扎實。",
+        "待辦不再堆成心理負債，主線也有碰到。今天的你正在替明天減少阻力。",
+        "你不是靠一個大爆發，而是把一堆小阻塞逐一拆掉。這才是長期能走下去的做法。",
+      ], `${seedBase}-village-clear`),
+      nextStep: "賞賜已經值得解鎖；今晚不要再開新坑。",
+      streak,
+    };
+  }
+
+  if (todoDone >= 3) {
+    return {
+      key: "todo-clear",
+      title: "生活阻塞正在被清掉",
+      label: "村民印記已滿",
+      message: pickStableLine([
+        "你把三件待辦清掉，腦袋裡少了幾個一直閃的紅點。這不是小事。",
+        "雜事做完不會立刻讓人生變好，但會讓你有空間去做真正重要的事。",
+        "今天先把生活的路面掃乾淨，明天主線才跑得動。",
+      ], `${seedBase}-todo-clear`),
+      nextStep: "再完成一件人生主線，封印賞賜就會打開。",
+      streak,
+    };
+  }
+
+  if (mainDone >= 1 && todoDone >= 2) {
+    return {
+      key: "steady-unlock",
+      title: "穩定門檻已跨過",
+      label: "主線與待辦都有碰到",
+      message: pickStableLine([
+        "你不是只做喜歡的事，也把該處理的事情推了一點。這正是村長要獎勵的節奏。",
+        "今天有一條人生主線、也有兩件真實生活待辦。這已經不是待機，而是在前進。",
+        "你做的事情不一定華麗，但很接近真正會改變生活的那種努力。",
+      ], `${seedBase}-steady-unlock`),
+      nextStep: "封印賞賜已可領取，領完就安心休息。",
+      streak,
+    };
+  }
+
+  if (streak >= 3) {
+    return {
+      key: "streak",
+      title: `火種連線第 ${streak} 天`,
+      label: "穩定比爆發更稀有",
+      message: pickStableLine([
+        "你最近沒有斷線。別小看這件事，能回來的人，比一天衝很猛的人更走得遠。",
+        "連續幾天都有火種，代表你正在把行動從意志力，慢慢變成生活的一部分。",
+        "你不是每天都很強，但你有持續出現。這已經是非常實際的能力。",
+      ], `${seedBase}-streak`),
+      nextStep: "今天只要再推一件最小事情，就把這條火線接下去。",
+      streak,
+    };
+  }
+
+  if (mainDone || todoDone) {
+    return {
+      key: "ember",
+      title: "火種已點起",
+      label: "今天不是歸零",
+      message: pickStableLine([
+        "事情還沒做很多，但你已經開始。開始本身，就是把拖延的牆敲出第一個洞。",
+        "今天有一件事被你推動了。先不要急著批評份量，火種先留下來。",
+        "你已經從『想做』跨到『做了一點』。接下來再補一件待辦就很夠了。",
+      ], `${seedBase}-ember`),
+      nextStep: "補一件主線或待辦，讓今天從火種變成節奏。",
+      streak,
+    };
+  }
+
+  return {
+    key: "start",
+    title: "村長在等你的第一步",
+    label: "今天還沒開局",
+    message: pickStableLine([
+      "不用把所有事情想完。先做一件 5 分鐘的小事，今天就開始有方向。",
+      "真正卡住時，計畫通常沒用；先把一件眼前小事完成，路就會出現。",
+      "今天不需要完美待辦表，只需要一個勾勾。",
+    ], `${seedBase}-start`),
+    nextStep: "完成保命開局，或新增並完成一件最小待辦。",
+    streak,
+  };
+}
+
+function getAdaptiveDailyReward(state) {
+  const base = state.dailyReward || createDailyReward(state.day);
+  if (base.claimed || base.locked) return base;
+
+  const highOutput = state.energy >= 80 && hasCoreTriple(state.tasks) && getTodoDoneCount(state.todos) >= 3;
+  if (state.energy <= 30) {
+    return createRewardFromPool(state.day, "recovery", {
+      issueMode: "保命覆蓋令",
+      overrideReason: "今天能量偏低，村長把一般賞賜改為恢復型賞賜。",
+    });
+  }
+
+  if (highOutput) {
+    const poolName = hashString(`${state.day}-high-output`) % 100 < 65 ? "boost" : "ticket";
+    return createRewardFromPool(state.day, poolName, {
+      issueMode: "高輸出加碼",
+      overrideReason: "你完成了核心三線與三件待辦，村長將今日賞賜升級。",
+    });
+  }
+
+  return base;
+}
+
+function getRewardReason(state, reward) {
+  const insight = getVillageInsight(state);
+  if (reward?.overrideReason) return reward.overrideReason;
+
+  const reasons = {
+    recovery: "村長看到你今天更需要把節奏守住，而不是再用娛樂把自己榨乾，所以發的是恢復型賞賜。",
+    small: "你有做事，也需要一點立即而乾淨的回饋；這份小爽不必花金幣，也不需要內疚。",
+    boost: "今天的推進值得替明天鋪一點路，所以村長把回饋做成下一步會用到的加成。",
+    ticket: "你不是每天都該拿大獎；這張券是把較大的放鬆留給真正有推進的時候。",
+  };
+
+  return `${reasons[reward?.pool] || "這份賞賜是村長根據你今天的節奏發出的。"} 今日判讀：${insight.label}。`;
 }
 
 const initialState = {
@@ -387,9 +635,11 @@ const initialState = {
   reportHistory: [],
   villageRewardHistory: [],
   lastReport: "尚未有自動戰報。",
-  message: "v12 村長模式：主線推進、待辦清空、每天一張封印賞賜卡。",
+  message: "v12.6 明日開局版：今晚先替明天留 1～3 件要緊的事，跨日後會自動帶進今日。",
   tasks: clone(defaultTasks),
   todos: [],
+  tomorrowTodos: [],
+  backlogTodos: [],
   dailyReward: createDailyReward(),
   pendingBoosts: [],
   coupons: [],
@@ -398,6 +648,7 @@ const initialState = {
   goalFunds: { debt: 0, travel: 0, housing: 0 },
   rewards: clone(rewardShop),
   rewardSystemVersion: 12,
+  villageSystemVersion: VILLAGE_SYSTEM_VERSION,
   attrs: { 體力: 0, 智力: 0, 財力: 0, 家庭: 0, 心力: 0, 魅力: 0 },
 };
 
@@ -451,19 +702,24 @@ function normalizeTodo(todo) {
     category: todo?.category || "生活",
     done: Boolean(todo?.done),
     createdAt: todo?.createdAt || new Date().toISOString(),
+    carriedFrom: todo?.carriedFrom || "",
   };
 }
 
 function normalizeReward(rawReward, day) {
+  const fallback = createDailyReward(day);
   if (rawReward && rawReward.date === day && rawReward.title) {
     return {
-      ...createDailyReward(day),
+      ...fallback,
       ...rawReward,
-      effect: rawReward.effect || createDailyReward(day).effect,
+      effect: rawReward.effect || fallback.effect,
       claimed: Boolean(rawReward.claimed),
+      locked: Boolean(rawReward.locked),
+      lockedAt: rawReward.lockedAt || "",
+      issueMode: rawReward.issueMode || "每日抽選",
     };
   }
-  return createDailyReward(day);
+  return fallback;
 }
 
 function normalizeState(raw) {
@@ -474,6 +730,12 @@ function normalizeState(raw) {
   state.todos = Array.isArray(state.todos)
     ? state.todos.map(normalizeTodo).filter((todo) => todo.title)
     : [];
+  state.tomorrowTodos = Array.isArray(state.tomorrowTodos)
+    ? state.tomorrowTodos.map((todo) => ({ ...normalizeTodo(todo), done: false })).filter((todo) => todo.title)
+    : [];
+  state.backlogTodos = Array.isArray(state.backlogTodos)
+    ? state.backlogTodos.map((todo) => ({ ...normalizeTodo(todo), done: false })).filter((todo) => todo.title)
+    : [];
   state.dailyReward = normalizeReward(state.dailyReward, state.day);
   state.pendingBoosts = Array.isArray(state.pendingBoosts) ? state.pendingBoosts : [];
   state.coupons = Array.isArray(state.coupons) ? state.coupons : [];
@@ -483,6 +745,7 @@ function normalizeState(raw) {
     ? state.rewards
     : clone(rewardShop);
   state.rewardSystemVersion = 12;
+  state.villageSystemVersion = VILLAGE_SYSTEM_VERSION;
   state.fireLog = Array.isArray(state.fireLog) ? state.fireLog : [];
   state.reportHistory = Array.isArray(state.reportHistory) ? state.reportHistory : [];
   state.villageRewardHistory = Array.isArray(state.villageRewardHistory) ? state.villageRewardHistory : [];
@@ -514,6 +777,37 @@ function getTodoDoneCount(todos) {
 
 function getSeals(todos) {
   return Math.min(3, getTodoDoneCount(todos));
+}
+
+function getTomorrowLaunchPlan(todos) {
+  const count = Array.isArray(todos) ? todos.length : 0;
+  if (count === 0) {
+    return {
+      title: "明天留白也可以",
+      message: "睡前只要放 1～3 件真正要緊的事就夠了。不要把明天排成補債日。",
+      tone: "empty",
+    };
+  }
+  if (count <= 3) {
+    return {
+      title: `明天已安排 ${count} 件`,
+      message: "這個份量剛好。明天先從最小的一件開始，不需要一醒來就衝刺。",
+      tone: "good",
+    };
+  }
+  return {
+    title: `明天已排 ${count} 件`,
+    message: "已經夠了，先別再塞新事。留一點空白給突發狀況和真正重要的主線。",
+    tone: "full",
+  };
+}
+
+function makeBacklogTodo(todo, day) {
+  return {
+    ...normalizeTodo(todo),
+    done: false,
+    carriedFrom: todo?.carriedFrom || day,
+  };
 }
 
 function hasCoreTriple(tasks) {
@@ -601,10 +895,14 @@ function getBattleMessage(tasks, todos) {
 function buildReport(state) {
   const done = state.tasks.filter((task) => task.done).length;
   const todoDone = getTodoDoneCount(state.todos);
+  const tomorrowTotal = Array.isArray(state.tomorrowTodos) ? state.tomorrowTodos.length : 0;
+  const backlogTotal = Array.isArray(state.backlogTodos) ? state.backlogTodos.length : 0;
   const title = getDailyTitle(state.tasks, state.todos);
   const comment = getBattleMessage(state.tasks, state.todos);
   const unlock = getRewardUnlock(state);
-  const reward = state.dailyReward || createDailyReward(state.day);
+  const reward = getAdaptiveDailyReward(state);
+  const villageInsight = getVillageInsight(state);
+  const rewardReason = getRewardReason(state, reward);
 
   const mainLines = state.tasks
     .filter((task) => task.group === "主線")
@@ -642,7 +940,14 @@ function buildReport(state) {
     "今日待辦：",
     todoLines,
     "",
+    `明日待辦：已安排 ${tomorrowTotal} 件`,
+    `未完成待辦：待處理 ${backlogTotal} 件`,
+    "",
+    `村長觀察：${villageInsight.title}`, 
+    `村長判讀：${villageInsight.message}`,
+    `村長下一步：${villageInsight.nextStep}`,
     `村長賞賜：${rewardStatus}`,
+    `賞賜理由：${rewardReason}`,
     `今日稱號：${title}`,
     `系統評語：${comment}`,
   ].join("\n");
@@ -654,11 +959,16 @@ function buildReport(state) {
     total: state.tasks.length,
     todoDone,
     todoTotal: state.todos.length,
+    tomorrowTotal,
+    backlogTotal,
     seals: getSeals(state.todos),
     coins: state.todayCoins,
     exp: state.todayExp,
     rewardTitle: reward.claimed || unlock.unlocked ? reward.title : "封印賞賜卡",
     rewardClaimed: Boolean(reward.claimed),
+    villageInsightTitle: villageInsight.title,
+    villageInsightMessage: villageInsight.message,
+    rewardReason,
     report,
   };
 }
@@ -667,13 +977,16 @@ function archiveCurrentDay(state) {
   const reportItem = buildReport(state);
   const alreadySaved = state.reportHistory.some((item) => item.date === state.day);
   const unlock = getRewardUnlock(state);
-  const reward = state.dailyReward || createDailyReward(state.day);
+  const reward = getAdaptiveDailyReward(state);
+  const villageInsight = getVillageInsight(state);
 
   const rewardHistoryItem = {
     date: state.day,
     title: reward.claimed || unlock.unlocked ? reward.title : "封印賞賜卡",
     pool: reward.pool,
     status: reward.claimed ? "已領取" : unlock.unlocked ? "已解鎖未領取" : "未解鎖",
+    insightTitle: villageInsight.title,
+    insightMessage: villageInsight.message,
   };
 
   return {
@@ -706,19 +1019,30 @@ function archiveAndStartNewDay(state) {
   const archived = archiveCurrentDay(state);
   const oldTitle = getDailyTitle(state.tasks, state.todos);
   const newDay = todayKey();
+  const unfinishedToday = state.todos
+    .filter((todo) => !todo.done)
+    .map((todo) => makeBacklogTodo(todo, state.day));
+  const existingBacklog = Array.isArray(state.backlogTodos) ? state.backlogTodos : [];
+  const backlogTodos = [...unfinishedToday, ...existingBacklog]
+    .filter((todo, index, array) => array.findIndex((item) => item.id === todo.id) === index)
+    .map((todo) => ({ ...normalizeTodo(todo), done: false }));
+  const todos = (Array.isArray(state.tomorrowTodos) ? state.tomorrowTodos : [])
+    .map((todo) => ({ ...normalizeTodo(todo), done: false, carriedFrom: "" }));
 
   return {
     ...archived,
     day: newDay,
     tasks: clone(defaultTasks),
-    todos: [],
+    todos,
+    tomorrowTodos: [],
+    backlogTodos,
     dailyReward: createDailyReward(newDay),
     energy: 70,
     todayCoins: 0,
     todayExp: 0,
     recoveryUsedDay: "",
     coupons: archived.coupons.filter((coupon) => !isExpiredCoupon(coupon, newDay)),
-    message: `昨天的戰報已自動保存：${oldTitle}。今天先清一件待辦，再碰一件主線。`,
+    message: `昨天的戰報已自動保存：${oldTitle}。明日待辦已搬進今天；未完成的項目放進待處理區，等你自己決定。`,
   };
 }
 
@@ -837,7 +1161,7 @@ export default function LifeLevelingAppV12() {
   const [taskFormOpen, setTaskFormOpen] = useState(false);
   const [todoFormOpen, setTodoFormOpen] = useState(false);
   const [expandedReportDate, setExpandedReportDate] = useState("");
-  const [todoDraft, setTodoDraft] = useState({ title: "", category: "生活" });
+  const [todoDraft, setTodoDraft] = useState({ title: "", category: "生活", target: "today" });
   const [taskDraft, setTaskDraft] = useState({ title: "", coins: 30, group: "支線", attr: "心力" });
 
   useEffect(() => {
@@ -859,6 +1183,26 @@ export default function LifeLevelingAppV12() {
     };
   }, []);
 
+  // 賞賜一旦解鎖就鎖定，避免調整能量、勾回待辦或重整頁面洗卡。
+  useEffect(() => {
+    setState((previous) => {
+      if (previous.day !== todayKey()) return previous;
+      const currentUnlock = getRewardUnlock(previous);
+      const original = previous.dailyReward || createDailyReward(previous.day);
+      if (!currentUnlock.unlocked || original.claimed || original.locked) return previous;
+
+      const selected = getAdaptiveDailyReward(previous);
+      return {
+        ...previous,
+        dailyReward: {
+          ...selected,
+          locked: true,
+          lockedAt: new Date().toISOString(),
+        },
+      };
+    });
+  }, [state.day, state.energy, state.tasks, state.todos]);
+
   const completedTasks = state.tasks.filter((task) => task.done);
   const completedTodos = state.todos.filter((todo) => todo.done);
   const isSurvival = state.energy <= 30;
@@ -878,8 +1222,14 @@ export default function LifeLevelingAppV12() {
   const dailyTitle = getDailyTitle(state.tasks, state.todos);
   const battleMessage = getBattleMessage(state.tasks, state.todos);
   const unlock = getRewardUnlock(state);
-  const reward = state.dailyReward || createDailyReward(state.day);
+  const reward = getAdaptiveDailyReward(state);
+  const villageInsight = getVillageInsight(state);
+  const rewardReason = getRewardReason(state, reward);
   const seals = getSeals(state.todos);
+  const mainDoneCount = getMainDoneCount(state.tasks);
+  const todoDoneCount = getTodoDoneCount(state.todos);
+  const fireStreak = getRecentFireStreak(state.fireLog, state.day);
+  const tomorrowPlan = getTomorrowLaunchPlan(state.tomorrowTodos);
 
   function patch(updater) {
     setState((previous) => {
@@ -941,19 +1291,36 @@ export default function LifeLevelingAppV12() {
   function addTodo() {
     const title = todoDraft.title.trim();
     if (!title) return;
-    const todo = {
-      id: `todo-${Date.now()}`,
-      title,
-      category: todoDraft.category,
-      done: false,
-      createdAt: new Date().toISOString(),
-    };
-    patch((previous) => ({
-      ...previous,
-      todos: [...previous.todos, todo],
-      message: `已加入今日待辦：「${title}」。待辦不刷金幣，但可累積村民印記。`,
-    }));
-    setTodoDraft({ title: "", category: "生活" });
+    const target = todoDraft.target || "today";
+
+    patch((previous) => {
+      if (target === "tomorrow" && previous.tomorrowTodos.length >= TOMORROW_TODO_LIMIT) {
+        return { ...previous, message: `明日待辦最多先放 ${TOMORROW_TODO_LIMIT} 件。先留白，明天才有處理突發狀況的空間。` };
+      }
+
+      const todo = {
+        id: `todo-${Date.now()}`,
+        title,
+        category: todoDraft.category,
+        done: false,
+        createdAt: new Date().toISOString(),
+        carriedFrom: "",
+      };
+
+      return target === "tomorrow"
+        ? {
+            ...previous,
+            tomorrowTodos: [...previous.tomorrowTodos, todo],
+            message: `已排進明日待辦：「${title}」。跨日後會自動搬到今日。`,
+          }
+        : {
+            ...previous,
+            todos: [...previous.todos, todo],
+            message: `已加入今日待辦：「${title}」。待辦不刷金幣，但可累積村民印記。`,
+          };
+    });
+
+    setTodoDraft({ title: "", category: "生活", target: "today" });
     setTodoFormOpen(false);
   }
 
@@ -978,13 +1345,58 @@ export default function LifeLevelingAppV12() {
     patch((previous) => ({
       ...previous,
       todos: previous.todos.filter((todo) => todo.id !== id),
-      message: "已刪除一件待辦。",
+      message: "已刪除一件今日待辦。",
+    }));
+  }
+
+  function deleteTomorrowTodo(id) {
+    patch((previous) => ({
+      ...previous,
+      tomorrowTodos: previous.tomorrowTodos.filter((todo) => todo.id !== id),
+      message: "已從明日待辦移除。",
+    }));
+  }
+
+  function moveBacklogToToday(id) {
+    patch((previous) => {
+      const todo = previous.backlogTodos.find((item) => item.id === id);
+      if (!todo) return previous;
+      return {
+        ...previous,
+        backlogTodos: previous.backlogTodos.filter((item) => item.id !== id),
+        todos: [...previous.todos, { ...todo, done: false, carriedFrom: todo.carriedFrom || "" }],
+        message: `已把「${todo.title}」搬進今日待辦。`,
+      };
+    });
+  }
+
+  function moveBacklogToTomorrow(id) {
+    patch((previous) => {
+      const todo = previous.backlogTodos.find((item) => item.id === id);
+      if (!todo) return previous;
+      if (previous.tomorrowTodos.length >= TOMORROW_TODO_LIMIT) {
+        return { ...previous, message: `明日待辦最多 ${TOMORROW_TODO_LIMIT} 件，先留一點空白。` };
+      }
+      return {
+        ...previous,
+        backlogTodos: previous.backlogTodos.filter((item) => item.id !== id),
+        tomorrowTodos: [...previous.tomorrowTodos, { ...todo, done: false }],
+        message: `已把「${todo.title}」延到明日待辦。`,
+      };
+    });
+  }
+
+  function deleteBacklogTodo(id) {
+    patch((previous) => ({
+      ...previous,
+      backlogTodos: previous.backlogTodos.filter((todo) => todo.id !== id),
+      message: "已刪除一件未完成待辦。",
     }));
   }
 
   function claimVillageReward() {
     patch((previous) => {
-      const currentReward = previous.dailyReward || createDailyReward(previous.day);
+      const currentReward = getAdaptiveDailyReward(previous);
       const currentUnlock = getRewardUnlock(previous);
       if (!currentUnlock.unlocked) {
         return { ...previous, message: `封印還沒解除：${currentUnlock.detail}` };
@@ -1144,7 +1556,7 @@ export default function LifeLevelingAppV12() {
         tasks: clone(defaultTasks),
         todos: [],
         energy: 70,
-        message: "今日清單已整理，固定主線與封印賞賜仍保留。",
+        message: "今日清單已整理；明日待辦與未完成待辦不會被清掉。",
       };
     });
   }
@@ -1161,7 +1573,7 @@ export default function LifeLevelingAppV12() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v12 村長模式</p>
+              <p className="text-sm text-slate-400">人生打怪村 v12.6 明日開局版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -1226,7 +1638,8 @@ export default function LifeLevelingAppV12() {
         <main className="p-4 pb-24">
           {tab === "today" && (
             <section className="space-y-4">
-              <VillageRewardCard reward={reward} unlock={unlock} onClaim={claimVillageReward} />
+              <VillageRewardCard reward={reward} unlock={unlock} insight={villageInsight} reason={rewardReason} onClaim={claimVillageReward} />
+              <VillageInsightCard insight={villageInsight} mainDone={mainDoneCount} todoDone={todoDoneCount} seals={seals} streak={fireStreak} />
 
               {isSurvival && (
                 <div className="bg-emerald-950/45 border border-emerald-500/40 rounded-3xl p-4">
@@ -1283,14 +1696,46 @@ export default function LifeLevelingAppV12() {
               )}
 
               <button onClick={() => setTodoFormOpen((value) => !value)} className="w-full rounded-2xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-100 h-12 border border-blue-400/30">
-                ＋ 新增今日待辦
+                ＋ 新增待辦（今天／明天）
               </button>
 
               {todoFormOpen && (
                 <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                   <TextInput label="待辦名稱" value={todoDraft.title} onChange={(value) => setTodoDraft({ ...todoDraft, title: value })} placeholder="例如：回覆王先生、買奶粉、繳帳單" />
                   <SelectInput label="分類" value={todoDraft.category} onChange={(value) => setTodoDraft({ ...todoDraft, category: value })} options={["工作", "家庭", "生活"]} />
-                  <button onClick={addTodo} className="w-full bg-blue-300 text-slate-950 rounded-2xl py-3 font-black">加入今日待辦</button>
+                  <SelectInput label="放進哪一天" value={todoDraft.target} onChange={(value) => setTodoDraft({ ...todoDraft, target: value })} options={[{ value: "today", label: "今天" }, { value: "tomorrow", label: "明天" }]} />
+                  <button onClick={addTodo} className="w-full bg-blue-300 text-slate-950 rounded-2xl py-3 font-black">{todoDraft.target === "tomorrow" ? "排進明日待辦" : "加入今日待辦"}</button>
+                </div>
+              )}
+
+              <div className="pt-2 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-black">明日待辦</h2>
+                  <p className="text-sm text-slate-400 mt-1">睡前先排 1～3 件；跨日後會自動搬進今日，不算今天印記。</p>
+                </div>
+                <div className="rounded-2xl bg-sky-300/10 border border-sky-300/25 px-3 py-2 text-center shrink-0">
+                  <div className="text-xs text-slate-400">已排</div>
+                  <div className="font-black text-sky-200">{state.tomorrowTodos.length}/{TOMORROW_TODO_LIMIT}</div>
+                </div>
+              </div>
+
+              <TomorrowLaunchCard plan={tomorrowPlan} />
+
+              {state.tomorrowTodos.length === 0 ? (
+                <div className="bg-slate-800 border border-dashed border-slate-600 rounded-3xl p-4 text-sm text-slate-400">還沒安排也沒關係。睡前想到明天一定要做的事，再放進來就好。</div>
+              ) : (
+                <div className="space-y-2">
+                  {state.tomorrowTodos.map((todo) => <TomorrowTodoCard key={todo.id} todo={todo} onDelete={deleteTomorrowTodo} />)}
+                </div>
+              )}
+
+              {state.backlogTodos.length > 0 && (
+                <div className="pt-2 space-y-2">
+                  <div>
+                    <h2 className="text-2xl font-black">未完成待辦</h2>
+                    <p className="text-sm text-slate-400 mt-1">昨天沒做完的事不會硬塞進今天。你自己決定要搬、延後或刪掉。</p>
+                  </div>
+                  {state.backlogTodos.map((todo) => <BacklogTodoCard key={todo.id} todo={todo} onToday={moveBacklogToToday} onTomorrow={moveBacklogToTomorrow} onDelete={deleteBacklogTodo} />)}
                 </div>
               )}
             </section>
@@ -1299,9 +1744,11 @@ export default function LifeLevelingAppV12() {
           {tab === "reward" && (
             <section className="space-y-4">
               <h2 className="text-2xl font-black">賞賜與目標</h2>
+              <VillageInsightCard insight={villageInsight} mainDone={mainDoneCount} todoDone={todoDoneCount} seals={seals} streak={fireStreak} compact />
+              <VillageRewardCard reward={reward} unlock={unlock} insight={villageInsight} reason={rewardReason} onClaim={claimVillageReward} compact />
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
                 <h3 className="font-black">村長規則</h3>
-                <p className="text-sm text-slate-400 leading-relaxed mt-2">小爽不再放進金幣商店。每天的即時回饋交給村長賞賜；金幣則留給撞球、美食、家庭時間與真正的人生目標。</p>
+                <p className="text-sm text-slate-400 leading-relaxed mt-2">小爽不再放進金幣商店。每天的即時回饋交給村長賞賜；金幣則留給撞球、美食、家庭時間與真正的人生目標。賞賜卡在解鎖當下就鎖定，重整也不能洗卡。</p>
               </div>
 
               {state.pendingBoosts.length > 0 && (
@@ -1396,7 +1843,7 @@ export default function LifeLevelingAppV12() {
                   <div className="mt-3 space-y-2 max-h-56 overflow-y-auto pr-1">
                     {state.villageRewardHistory.map((item) => (
                       <div key={item.date} className="flex items-center justify-between gap-3 border-b border-slate-700 pb-2 last:border-0">
-                        <div><p className="text-sm font-bold">{item.date}・{item.title}</p><p className="text-xs text-slate-500">{poolLabel(item.pool)}</p></div>
+                        <div><p className="text-sm font-bold">{item.date}・{item.title}</p><p className="text-xs text-slate-500">{poolLabel(item.pool)}{item.insightTitle ? `・${item.insightTitle}` : ""}</p></div>
                         <span className="text-xs text-amber-300 shrink-0">{item.status}</span>
                       </div>
                     ))}
@@ -1416,7 +1863,7 @@ export default function LifeLevelingAppV12() {
                         <button key={item.date} onClick={() => setExpandedReportDate(expanded ? "" : item.date)} className="w-full text-left border-b border-slate-700 pb-3 last:border-0">
                           <div className="flex justify-between items-center gap-3"><span className="font-bold text-white text-sm">{item.date}</span><span className="text-slate-400 text-xs shrink-0">任務 {item.done}/{item.total}・待辦 {item.todoDone}/{item.todoTotal}</span></div>
                           <div className="text-amber-300 text-sm mt-1">{item.title}</div>
-                          <div className="text-slate-500 text-xs mt-1">+{item.coins || 0} 金幣 / +{item.exp || 0} EXP / 印記 {item.seals || 0}/3</div>
+                          <div className="text-slate-500 text-xs mt-1">+{item.coins || 0} 金幣 / +{item.exp || 0} EXP / 印記 {item.seals || 0}/3 / 明日已排 {item.tomorrowTotal || 0} 件</div>
                           <div className="text-slate-500 text-xs mt-1">村長賞賜：{item.rewardTitle}</div>
                           {expanded && <p className="text-sm text-slate-300 mt-3 whitespace-pre-line leading-relaxed bg-slate-950 rounded-2xl p-3">{item.report}</p>}
                         </button>
@@ -1467,7 +1914,7 @@ export default function LifeLevelingAppV12() {
           {tab === "settings" && (
             <section className="space-y-3">
               <h2 className="text-2xl font-black">設定</h2>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v12 村長模式</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">每日待辦只累積印記；每天一張本地規則式村長賞賜卡。先驗證你有沒有感覺，再決定要不要接真正 AI API。</p></div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v12.6 明日開局版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">不接 API、不花錢。村長會根據能量、主線、待辦、核心三線與近期火種，生成固定但有脈絡的判讀與賞賜理由。新增明日待辦：跨日自動進今日；未完成事項則留在待處理區，由你決定下一步。</p></div>
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">資料儲存</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">固定使用 life-leveling-main-save。v9～v11 的主資料會盡量繼承；新功能會在同一個存檔下增加欄位。</p></div>
               <button onClick={repairTasks} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">修復預設人生主線</button>
               <button onClick={hardReset} className="w-full rounded-2xl bg-rose-900/80 text-rose-100 h-12 font-bold">全部重來</button>
@@ -1479,33 +1926,66 @@ export default function LifeLevelingAppV12() {
   );
 }
 
-function VillageRewardCard({ reward, unlock, onClaim }) {
-  const revealed = unlock.unlocked || reward.claimed;
+function VillageRewardCard({ reward, unlock, insight, reason, onClaim, compact = false }) {
+  const revealed = unlock.unlocked || reward.claimed || reward.locked;
   return (
     <div className={`rounded-3xl border p-4 shadow-[0_12px_30px_rgba(0,0,0,0.22)] ${revealed ? "bg-slate-800 border-amber-400/40" : "bg-slate-900 border-slate-700"}`}>
       <div className="flex justify-between items-start gap-3">
         <div>
-          <p className="text-sm text-slate-300">AI 村長今日封印賞賜</p>
+          <p className="text-sm text-slate-300">村長今日封印賞賜</p>
           <h2 className="text-xl font-black mt-1">{revealed ? reward.title : "？？？封印賞賜卡"}</h2>
         </div>
         <span className={`text-xs px-2 py-1 rounded-full border font-bold ${revealed ? rewardPoolClass(reward.pool) : "bg-slate-700 text-slate-300 border-slate-600"}`}>{revealed ? poolLabel(reward.pool) : "封印中"}</span>
       </div>
       {revealed ? (
         <>
+          {reward.issueMode !== "每日抽選" && <p className="text-xs text-amber-300 mt-2">{reward.issueMode}：{reward.overrideReason}</p>}
           <p className="text-sm text-slate-300 leading-relaxed mt-3">{reward.description}</p>
-          <p className="text-xs text-amber-200/90 mt-3">村長的話：{reward.villageLine}</p>
+          {!compact && <p className="text-xs text-amber-200/90 mt-3">村長的話：{reward.villageLine}</p>}
+          <div className="mt-3 rounded-2xl bg-slate-950/70 border border-slate-700 p-3">
+            <p className="text-xs text-slate-500">為什麼是這張卡</p>
+            <p className="text-sm text-slate-300 leading-relaxed mt-1">{reason}</p>
+          </div>
           <button onClick={onClaim} disabled={reward.claimed} className={`w-full mt-4 rounded-2xl h-12 font-black ${reward.claimed ? "bg-slate-700 text-slate-400" : "bg-amber-300 text-slate-950"}`}>
             {reward.claimed ? "今日賞賜已領取" : "領取村長賞賜"}
           </button>
         </>
       ) : (
         <>
-          <p className="text-sm text-slate-400 leading-relaxed mt-3">今天先不告訴你是什麼。把該推的主線和待辦推動，村長才會開封。</p>
+          <p className="text-sm text-slate-400 leading-relaxed mt-3">今天先不告訴你是什麼。卡片會在解鎖當下鎖定，重整也不會換。</p>
           <div className="mt-3 rounded-2xl bg-slate-950 border border-slate-800 p-3"><p className="text-xs text-slate-500">{unlock.label}</p><p className="font-bold text-white mt-1">{unlock.detail}</p><p className="text-xs text-amber-300 mt-2">目前進度：{unlock.progress}</p></div>
+          {!compact && <p className="text-xs text-slate-500 mt-3">村長目前判讀：{insight.title}。{insight.nextStep}</p>}
         </>
       )}
     </div>
   );
+}
+
+function VillageInsightCard({ insight, mainDone, todoDone, seals, streak, compact = false }) {
+  return (
+    <div className="rounded-3xl bg-slate-800 border border-slate-700 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm text-slate-300">今日村長觀察</p>
+          <h3 className="text-lg font-black mt-1">{insight.title}</h3>
+          <p className="text-xs text-amber-300 mt-1">{insight.label}</p>
+        </div>
+        <span className="text-2xl">村</span>
+      </div>
+      <p className="text-sm text-slate-300 leading-relaxed mt-3">{insight.message}</p>
+      {!compact && <div className="mt-3 rounded-2xl bg-slate-950/70 border border-slate-700 p-3"><p className="text-xs text-slate-500">村長建議的下一步</p><p className="text-sm font-bold text-white mt-1">{insight.nextStep}</p></div>}
+      <div className="grid grid-cols-4 gap-2 mt-3 text-center">
+        <MiniVillageStat label="主線" value={mainDone} />
+        <MiniVillageStat label="待辦" value={todoDone} />
+        <MiniVillageStat label="印記" value={`${seals}/3`} />
+        <MiniVillageStat label="連火" value={streak ? `${streak}天` : "0"} />
+      </div>
+    </div>
+  );
+}
+
+function MiniVillageStat({ label, value }) {
+  return <div className="rounded-xl bg-slate-950 border border-slate-800 p-2"><p className="text-[10px] text-slate-500">{label}</p><p className="text-sm font-black text-amber-200 mt-1">{value}</p></div>;
 }
 
 function TaskCard({ task, onComplete, onDelete, canDelete }) {
@@ -1536,6 +2016,43 @@ function TodoCard({ todo, onToggle, onDelete }) {
   );
 }
 
+function TomorrowTodoCard({ todo, onDelete }) {
+  return (
+    <div className="rounded-2xl border border-sky-400/30 bg-sky-950/25 p-3 flex gap-3 items-center">
+      <div className="w-9 h-9 rounded-full shrink-0 border border-sky-300/35 text-sky-200 flex items-center justify-center font-black">明</div>
+      <div className="flex-1 min-w-0"><div className="flex items-center gap-2"><h3 className="font-bold break-words text-white">{todo.title}</h3><span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${todoCategoryClass(todo.category)}`}>{todo.category}</span></div><p className="text-xs text-sky-200/80 mt-1">跨日後會自動搬進今日待辦</p></div>
+      <button onClick={() => onDelete(todo.id)} className="text-slate-500 hover:text-rose-400 p-1">✕</button>
+    </div>
+  );
+}
+
+function BacklogTodoCard({ todo, onToday, onTomorrow, onDelete }) {
+  return (
+    <div className="rounded-2xl border border-rose-400/25 bg-rose-950/20 p-3">
+      <div className="flex items-start gap-3">
+        <div className="w-9 h-9 rounded-full shrink-0 border border-rose-300/35 text-rose-200 flex items-center justify-center font-black">待</div>
+        <div className="flex-1 min-w-0"><div className="flex items-center gap-2"><h3 className="font-bold break-words text-white">{todo.title}</h3><span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${todoCategoryClass(todo.category)}`}>{todo.category}</span></div><p className="text-xs text-slate-500 mt-1">原本：{todo.carriedFrom || "昨天"}</p></div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 mt-3">
+        <button onClick={() => onToday(todo.id)} className="rounded-xl bg-blue-300 text-slate-950 px-2 py-2 text-xs font-black">搬到今天</button>
+        <button onClick={() => onTomorrow(todo.id)} className="rounded-xl bg-sky-300/15 text-sky-100 border border-sky-300/30 px-2 py-2 text-xs font-black">延到明天</button>
+        <button onClick={() => onDelete(todo.id)} className="rounded-xl bg-slate-800 text-slate-300 border border-slate-700 px-2 py-2 text-xs font-black">刪除</button>
+      </div>
+    </div>
+  );
+}
+
+function TomorrowLaunchCard({ plan }) {
+  const tone = plan.tone === "good" ? "border-emerald-400/35 bg-emerald-950/25" : plan.tone === "full" ? "border-amber-400/35 bg-amber-950/25" : "border-slate-700 bg-slate-800";
+  return (
+    <div className={`rounded-3xl border p-4 ${tone}`}>
+      <p className="text-sm text-slate-300">村長的明日開局提醒</p>
+      <h3 className="font-black text-lg mt-1">{plan.title}</h3>
+      <p className="text-sm text-slate-300 leading-relaxed mt-2">{plan.message}</p>
+    </div>
+  );
+}
+
 function StatCard({ label, value }) {
   return <div className="bg-slate-950/50 border border-slate-800 rounded-2xl p-3 text-center"><p className="text-xs text-slate-500 font-bold">{label}</p><p className="text-xl font-black text-white mt-1">{value}</p></div>;
 }
@@ -1549,5 +2066,5 @@ function TextInput({ label, type = "text", value, onChange, placeholder }) {
 }
 
 function SelectInput({ label, value, onChange, options }) {
-  return <div><label className="block text-xs text-slate-400 mb-1 font-bold">{label}</label><select value={value} onChange={(event) => onChange(event.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-amber-400">{options.map((option) => <option key={option} value={option}>{option}</option>)}</select></div>;
+  return <div><label className="block text-xs text-slate-400 mb-1 font-bold">{label}</label><select value={value} onChange={(event) => onChange(event.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-amber-400">{options.map((option) => { const optionValue = typeof option === "string" ? option : option.value; const optionLabel = typeof option === "string" ? option : option.label; return <option key={optionValue} value={optionValue}>{optionLabel}</option>; })}</select></div>;
 }
