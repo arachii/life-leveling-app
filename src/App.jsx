@@ -1,21 +1,25 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /*
- * 人生打怪村 v12.6：本地智慧村長＋明日開局
+ * 人生打怪村 v13：減重守門＋獎勵重整
  *
  * 設計原則：
  * 1. 人生主線仍給金幣；每日待辦不給金幣，只累積村民印記（每日最多 3 枚）。
  * 2. 每天只有一張封印賞賜卡，依日期固定，不可用重整洗卡。
  * 3. 村長會依能量、主線、待辦、核心三線與近期火種，動態產生「村長觀察」與賞賜理由。
  * 4. 這是零成本、本地規則式的智慧村長：不使用 API Key、不連外、不收集資料。
- * 5. 新增明日待辦與未完成待辦：明日跨日自動移入今日；今天未完成的項目不強塞進明天。
- * 6. 繼續沿用固定存檔 key，不切斷 v9～v12 的紀錄。
+ * 5. 保留明日待辦與未完成待辦：明日跨日自動移入今日；今天未完成的項目不強塞進明天。
+ * 6. 新增每日熱量、飲食與體重趨勢，跨日自動封存。
+ * 7. 繼續沿用固定存檔 key，不切斷 v9～v12.6 的紀錄。
  */
 
 const STORAGE_KEY = "life-leveling-main-save";
 const DAILY_COIN_CAP = 300;
 const MAX_REPORTS = 100;
-const VILLAGE_SYSTEM_VERSION = "12.6";
+const VILLAGE_SYSTEM_VERSION = "13";
+const DEFAULT_CALORIE_TARGET = 2000;
+const DEFAULT_CURRENT_WEIGHT = 94;
+const DEFAULT_GOAL_WEIGHT = 69;
 const TOMORROW_TODO_LIMIT = 5;
 
 const OLD_STORAGE_KEYS = [
@@ -160,6 +164,22 @@ const defaultTasks = [
     done: false,
   },
   {
+    id: "calorie-guard",
+    taskKey: "calorie-guard",
+    title: "熱量守門",
+    desc: "把今天主要吃喝記進熱量頁。不是逼自己挨餓，而是先看清楚總量。",
+    standard: "完成：記錄至少 2 筆主要飲食。漂亮完成：主要餐點都有記，並知道今天剩餘熱量。",
+    group: "支線",
+    type: "熱量管理",
+    difficulty: "D",
+    coins: 35,
+    exp: 25,
+    energy: 3,
+    attr: "體力",
+    attrExp: 18,
+    done: false,
+  },
+  {
     id: "low-pressure",
     taskKey: "low-pressure",
     title: "隨機事件：低壓前進",
@@ -179,38 +199,38 @@ const defaultTasks = [
 
 const rewardShop = [
   {
+    id: "entertainment-block",
+    title: "完整娛樂時段 2 小時",
+    desc: "遊戲、電影或小說選一種，專心享受，不一邊娛樂一邊責怪自己。",
+    level: "中獎",
+    cost: 250,
+    weeklyLimit: 2,
+    cooldownDays: 0,
+  },
+  {
     id: "billiards",
     title: "去打撞球一次",
-    desc: "把撞球當作有意識的放鬆，而不是逃避。",
+    desc: "把撞球當作有意識的放鬆，也是一段離開螢幕的活動時間。",
     level: "中獎",
     cost: 350,
     weeklyLimit: 1,
     cooldownDays: 0,
   },
   {
-    id: "treat-meal",
-    title: "300 元內自己想吃的一餐",
-    desc: "不是亂花，是把一段努力過成有感的日子。",
-    level: "中獎",
-    cost: 450,
-    weeklyLimit: 1,
-    cooldownDays: 0,
-  },
-  {
-    id: "family-halfday",
-    title: "家庭半日行程",
-    desc: "陪伴、出門、走走，讓努力最後回到家。",
+    id: "family-outdoor",
+    title: "家庭戶外半日",
+    desc: "帶家人散步、逛公園或走走，不必用大餐才算獎勵。",
     level: "大獎",
-    cost: 750,
+    cost: 650,
     weeklyLimit: 0,
     cooldownDays: 7,
   },
   {
     id: "freedom-halfday",
     title: "半日自由時段",
-    desc: "安排一段真正由你決定的時間。",
+    desc: "安排一段真正由你決定的時間，不拿來補工作債。",
     level: "大獎",
-    cost: 800,
+    cost: 750,
     weeklyLimit: 0,
     cooldownDays: 7,
   },
@@ -294,10 +314,10 @@ const rewardPools = {
       effect: { kind: "ritual" },
     },
     {
-      id: "drink-pass",
-      title: "50 元內小飲料權",
-      description: "今天可買一杯 50 元內的飲料或小點心，慢慢喝，不用拿來配焦慮。",
-      villageLine: "小小的甜，是提醒你：今天也有好好活著。",
+      id: "music-bath-pass",
+      title: "音樂熱水澡儀式",
+      description: "今晚洗個熱水澡或泡腳 20 分鐘，配手碟或喜歡的音樂，不滑短影音。",
+      villageLine: "獎勵不一定要吃進肚子；真正放鬆，身體會知道。",
       effect: { kind: "ritual" },
     },
     {
@@ -333,11 +353,11 @@ const rewardPools = {
       effect: { kind: "coupon", targetId: "billiards", amount: 100, expiresInDays: 7 },
     },
     {
-      id: "meal-coupon",
-      title: "美食折扣券",
-      description: "7 天內兌換「300 元內自己想吃的一餐」時，少花 100 金幣。",
-      villageLine: "努力不只要還債，也要偶爾嚐到自己在往前的味道。",
-      effect: { kind: "coupon", targetId: "treat-meal", amount: 100, expiresInDays: 7 },
+      id: "entertainment-coupon",
+      title: "娛樂時段折扣券",
+      description: "7 天內兌換「完整娛樂時段 2 小時」時，少花 80 金幣。",
+      villageLine: "減重不是把快樂拿掉，而是把快樂從食物之外重新找回來。",
+      effect: { kind: "coupon", targetId: "entertainment-block", amount: 80, expiresInDays: 7 },
     },
   ],
 };
@@ -621,6 +641,46 @@ function getRewardReason(state, reward) {
   return `${reasons[reward?.pool] || "這份賞賜是村長根據你今天的節奏發出的。"} 今日判讀：${insight.label}。`;
 }
 
+const mealTypeOptions = ["早餐", "午餐", "晚餐", "點心", "飲料", "其他"];
+
+function normalizeFoodEntry(entry) {
+  return {
+    id: entry?.id || `food-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: String(entry?.name || "").trim(),
+    calories: Math.max(0, Number(entry?.calories || 0)),
+    mealType: mealTypeOptions.includes(entry?.mealType) ? entry.mealType : "其他",
+    createdAt: entry?.createdAt || new Date().toISOString(),
+  };
+}
+
+function getCalorieTotal(entries) {
+  return (Array.isArray(entries) ? entries : []).reduce(
+    (sum, entry) => sum + Math.max(0, Number(entry?.calories || 0)),
+    0
+  );
+}
+
+function getCalorieState(total, target) {
+  const safeTarget = Math.max(1, Number(target || DEFAULT_CALORIE_TARGET));
+  const difference = safeTarget - total;
+  if (total === 0) {
+    return { label: "尚未記錄", message: "先記第一餐，不必一開始就追求百分之百準確。", tone: "empty" };
+  }
+  if (difference >= 0) {
+    return { label: "仍在目標內", message: `今天還有約 ${difference} kcal。正常吃，不必刻意餓肚子。`, tone: "good" };
+  }
+  if (difference >= -200) {
+    return { label: "稍微超出", message: `目前超出約 ${Math.abs(difference)} kcal。今天不用補償性挨餓，下一餐恢復正常即可。`, tone: "warn" };
+  }
+  return { label: "今日超出較多", message: `目前超出約 ${Math.abs(difference)} kcal。先留下紀錄，明天回到原定目標，不用極端節食。`, tone: "over" };
+}
+
+function calculateBmi(weight, heightCm = 176) {
+  const meters = Number(heightCm) / 100;
+  if (!meters || !Number(weight)) return 0;
+  return Number(weight) / (meters * meters);
+}
+
 const initialState = {
   day: todayKey(),
   coins: 0,
@@ -635,11 +695,18 @@ const initialState = {
   reportHistory: [],
   villageRewardHistory: [],
   lastReport: "尚未有自動戰報。",
-  message: "v12.6 明日開局版：今晚先替明天留 1～3 件要緊的事，跨日後會自動帶進今日。",
+  message: "v13 減重守門版：獎勵不再以食物為中心，熱量頁先把每天吃喝看清楚。",
   tasks: clone(defaultTasks),
   todos: [],
   tomorrowTodos: [],
   backlogTodos: [],
+  calorieTarget: DEFAULT_CALORIE_TARGET,
+  currentWeight: DEFAULT_CURRENT_WEIGHT,
+  goalWeight: DEFAULT_GOAL_WEIGHT,
+  heightCm: 176,
+  foodEntries: [],
+  calorieHistory: [],
+  weightHistory: [{ date: todayKey(), weight: DEFAULT_CURRENT_WEIGHT }],
   dailyReward: createDailyReward(),
   pendingBoosts: [],
   coupons: [],
@@ -647,7 +714,7 @@ const initialState = {
   rewardUsage: [],
   goalFunds: { debt: 0, travel: 0, housing: 0 },
   rewards: clone(rewardShop),
-  rewardSystemVersion: 12,
+  rewardSystemVersion: 13,
   villageSystemVersion: VILLAGE_SYSTEM_VERSION,
   attrs: { 體力: 0, 智力: 0, 財力: 0, 家庭: 0, 心力: 0, 魅力: 0 },
 };
@@ -736,15 +803,27 @@ function normalizeState(raw) {
   state.backlogTodos = Array.isArray(state.backlogTodos)
     ? state.backlogTodos.map((todo) => ({ ...normalizeTodo(todo), done: false })).filter((todo) => todo.title)
     : [];
+  state.foodEntries = Array.isArray(state.foodEntries)
+    ? state.foodEntries.map(normalizeFoodEntry).filter((entry) => entry.name && entry.calories > 0)
+    : [];
+  state.calorieHistory = Array.isArray(state.calorieHistory) ? state.calorieHistory : [];
+  state.weightHistory = Array.isArray(state.weightHistory) ? state.weightHistory : [];
+  state.calorieTarget = Math.max(1200, Number(state.calorieTarget || DEFAULT_CALORIE_TARGET));
+  state.currentWeight = Number(state.currentWeight || DEFAULT_CURRENT_WEIGHT);
+  state.goalWeight = Number(state.goalWeight || DEFAULT_GOAL_WEIGHT);
+  state.heightCm = Number(state.heightCm || 176);
+  if (!state.weightHistory.length && state.currentWeight) {
+    state.weightHistory = [{ date: state.day, weight: state.currentWeight }];
+  }
   state.dailyReward = normalizeReward(state.dailyReward, state.day);
   state.pendingBoosts = Array.isArray(state.pendingBoosts) ? state.pendingBoosts : [];
-  state.coupons = Array.isArray(state.coupons) ? state.coupons : [];
+  state.coupons = Array.isArray(state.coupons) ? state.coupons.filter((coupon) => rewardShop.some((reward) => reward.id === coupon.targetId)) : [];
   state.rewardUsage = Array.isArray(state.rewardUsage) ? state.rewardUsage : [];
   const sourceRewardVersion = Number(raw?.rewardSystemVersion || 0);
-  state.rewards = sourceRewardVersion >= 12 && Array.isArray(state.rewards) && state.rewards.length
+  state.rewards = sourceRewardVersion >= 13 && Array.isArray(state.rewards) && state.rewards.length
     ? state.rewards
     : clone(rewardShop);
-  state.rewardSystemVersion = 12;
+  state.rewardSystemVersion = 13;
   state.villageSystemVersion = VILLAGE_SYSTEM_VERSION;
   state.fireLog = Array.isArray(state.fireLog) ? state.fireLog : [];
   state.reportHistory = Array.isArray(state.reportHistory) ? state.reportHistory : [];
@@ -897,6 +976,8 @@ function buildReport(state) {
   const todoDone = getTodoDoneCount(state.todos);
   const tomorrowTotal = Array.isArray(state.tomorrowTodos) ? state.tomorrowTodos.length : 0;
   const backlogTotal = Array.isArray(state.backlogTodos) ? state.backlogTodos.length : 0;
+  const calorieTotal = getCalorieTotal(state.foodEntries);
+  const calorieTarget = Number(state.calorieTarget || DEFAULT_CALORIE_TARGET);
   const title = getDailyTitle(state.tasks, state.todos);
   const comment = getBattleMessage(state.tasks, state.todos);
   const unlock = getRewardUnlock(state);
@@ -930,6 +1011,8 @@ function buildReport(state) {
     `完成待辦：${todoDone}/${state.todos.length}（村民印記 ${getSeals(state.todos)}/3）`,
     `今日金幣：+${state.todayCoins}`,
     `今日 EXP：+${state.todayExp}`,
+    `今日熱量：${calorieTotal}/${calorieTarget} kcal`,
+    `目前體重：${Number(state.currentWeight || 0).toFixed(1)} kg・目標 ${Number(state.goalWeight || 0).toFixed(1)} kg`,
     "",
     "人生主線：",
     mainLines || "- 尚無主線任務",
@@ -961,6 +1044,9 @@ function buildReport(state) {
     todoTotal: state.todos.length,
     tomorrowTotal,
     backlogTotal,
+    calorieTotal,
+    calorieTarget,
+    currentWeight: Number(state.currentWeight || 0),
     seals: getSeals(state.todos),
     coins: state.todayCoins,
     exp: state.todayExp,
@@ -989,8 +1075,20 @@ function archiveCurrentDay(state) {
     insightMessage: villageInsight.message,
   };
 
+  const calorieTotal = getCalorieTotal(state.foodEntries);
+  const calorieHistoryItem = {
+    date: state.day,
+    total: calorieTotal,
+    target: Number(state.calorieTarget || DEFAULT_CALORIE_TARGET),
+    entries: state.foodEntries.length,
+  };
+
   return {
     ...state,
+    calorieHistory: [
+      calorieHistoryItem,
+      ...(Array.isArray(state.calorieHistory) ? state.calorieHistory : []).filter((item) => item.date !== state.day),
+    ].slice(0, MAX_REPORTS),
     reportHistory: [reportItem, ...state.reportHistory.filter((item) => item.date !== state.day)].slice(0, MAX_REPORTS),
     fireLog: [
       ...state.fireLog.filter((item) => item.date !== state.day),
@@ -1036,6 +1134,7 @@ function archiveAndStartNewDay(state) {
     todos,
     tomorrowTodos: [],
     backlogTodos,
+    foodEntries: [],
     dailyReward: createDailyReward(newDay),
     energy: 70,
     todayCoins: 0,
@@ -1150,7 +1249,7 @@ function getRewardAvailability(state, reward) {
   return { available: true, reason: "" };
 }
 
-export default function LifeLevelingAppV12() {
+export default function LifeLevelingAppV13() {
   const [state, setState] = useState(() => {
     const saved = loadSavedState();
     const loaded = normalizeState(saved || initialState);
@@ -1163,6 +1262,10 @@ export default function LifeLevelingAppV12() {
   const [expandedReportDate, setExpandedReportDate] = useState("");
   const [todoDraft, setTodoDraft] = useState({ title: "", category: "生活", target: "today" });
   const [taskDraft, setTaskDraft] = useState({ title: "", coins: 30, group: "支線", attr: "心力" });
+  const [foodDraft, setFoodDraft] = useState({ name: "", calories: "", mealType: "早餐" });
+  const [weightDraft, setWeightDraft] = useState("");
+  const [calorieTargetDraft, setCalorieTargetDraft] = useState("");
+  const [goalWeightDraft, setGoalWeightDraft] = useState("");
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -1230,6 +1333,11 @@ export default function LifeLevelingAppV12() {
   const todoDoneCount = getTodoDoneCount(state.todos);
   const fireStreak = getRecentFireStreak(state.fireLog, state.day);
   const tomorrowPlan = getTomorrowLaunchPlan(state.tomorrowTodos);
+  const calorieTotal = getCalorieTotal(state.foodEntries);
+  const calorieInfo = getCalorieState(calorieTotal, state.calorieTarget);
+  const caloriePercent = Math.min(120, Math.round((calorieTotal / Math.max(1, state.calorieTarget)) * 100));
+  const currentBmi = calculateBmi(state.currentWeight, state.heightCm);
+  const weightRemaining = Math.max(0, Number(state.currentWeight || 0) - Number(state.goalWeight || 0));
 
   function patch(updater) {
     setState((previous) => {
@@ -1462,6 +1570,78 @@ export default function LifeLevelingAppV12() {
     });
   }
 
+  function addFoodEntry() {
+    const name = foodDraft.name.trim();
+    const calories = Math.round(Number(foodDraft.calories || 0));
+    if (!name || calories <= 0) {
+      patch((previous) => ({ ...previous, message: "請輸入食物名稱與大於 0 的熱量。" }));
+      return;
+    }
+    patch((previous) => ({
+      ...previous,
+      foodEntries: [
+        ...previous.foodEntries,
+        {
+          id: `food-${Date.now()}`,
+          name,
+          calories,
+          mealType: foodDraft.mealType,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      message: `已記錄「${name}」${calories} kcal。先求有記，再慢慢求準。`,
+    }));
+    setFoodDraft({ name: "", calories: "", mealType: foodDraft.mealType });
+  }
+
+  function deleteFoodEntry(id) {
+    patch((previous) => ({
+      ...previous,
+      foodEntries: previous.foodEntries.filter((entry) => entry.id !== id),
+      message: "已刪除一筆飲食紀錄。",
+    }));
+  }
+
+  function saveWeight() {
+    const weight = Number(weightDraft);
+    if (!weight || weight < 30 || weight > 300) {
+      patch((previous) => ({ ...previous, message: "請輸入合理的體重數字。" }));
+      return;
+    }
+    patch((previous) => ({
+      ...previous,
+      currentWeight: weight,
+      weightHistory: [
+        { date: previous.day, weight },
+        ...previous.weightHistory.filter((item) => item.date !== previous.day),
+      ].slice(0, MAX_REPORTS),
+      message: `今天體重已記錄：${weight.toFixed(1)} kg。看趨勢，不因單日波動責怪自己。`,
+    }));
+    setWeightDraft("");
+  }
+
+  function saveCalorieTarget() {
+    const raw = Number(calorieTargetDraft);
+    if (!raw) {
+      patch((previous) => ({ ...previous, message: "請輸入每日熱量目標。" }));
+      return;
+    }
+    const target = Math.max(1200, Math.min(4000, Math.round(raw)));
+    patch((previous) => ({ ...previous, calorieTarget: target, message: `每日熱量目標已調整為 ${target} kcal。` }));
+    setCalorieTargetDraft("");
+  }
+
+  function saveGoalWeight() {
+    const raw = Number(goalWeightDraft);
+    if (!raw) {
+      patch((previous) => ({ ...previous, message: "請輸入目標體重。" }));
+      return;
+    }
+    const goal = Math.max(40, Math.min(200, raw));
+    patch((previous) => ({ ...previous, goalWeight: goal, message: `目標體重已調整為 ${goal.toFixed(1)} kg。` }));
+    setGoalWeightDraft("");
+  }
+
   function addTask() {
     const title = taskDraft.title.trim();
     if (!title) return;
@@ -1546,7 +1726,7 @@ export default function LifeLevelingAppV12() {
 
   function resetToday() {
     patch((previous) => {
-      const hasProgress = previous.tasks.some((task) => task.done) || previous.todos.some((todo) => todo.done);
+      const hasProgress = previous.tasks.some((task) => task.done) || previous.todos.some((todo) => todo.done) || previous.foodEntries.length > 0;
       if (hasProgress) {
         return { ...previous, message: "今天已有完成紀錄，為避免刷金幣與重抽賞賜，不能重置。未完成的待辦可直接刪掉重建。" };
       }
@@ -1555,6 +1735,7 @@ export default function LifeLevelingAppV12() {
         ...previous,
         tasks: clone(defaultTasks),
         todos: [],
+        foodEntries: [],
         energy: 70,
         message: "今日清單已整理；明日待辦與未完成待辦不會被清掉。",
       };
@@ -1562,7 +1743,7 @@ export default function LifeLevelingAppV12() {
   }
 
   function hardReset() {
-    if (!window.confirm("確定全部重來？金幣、等級、待辦、歷史戰報與村長賞賜都會清空。")) return;
+    if (!window.confirm("確定全部重來？金幣、等級、待辦、熱量、體重、歷史戰報與村長賞賜都會清空。")) return;
     setState(clone(initialState));
     setTab("today");
   }
@@ -1573,7 +1754,7 @@ export default function LifeLevelingAppV12() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v12.6 明日開局版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v13 減重守門版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -1615,7 +1796,7 @@ export default function LifeLevelingAppV12() {
               <span className="text-xs px-2 py-1 rounded-full bg-amber-300/15 text-amber-300 border border-amber-300/20">{dailyTitle}</span>
             </div>
             <p className="text-base font-bold text-white leading-relaxed">{battleMessage}</p>
-            <p className="text-xs text-slate-500 mt-3">每日金幣上限 {DAILY_COIN_CAP}；待辦不刷金幣，只用來解除村長封印。</p>
+            <p className="text-xs text-slate-500 mt-3">每日金幣上限 {DAILY_COIN_CAP}；今天熱量 {calorieTotal}/{state.calorieTarget} kcal。</p>
             {isSurvival && <p className="text-sm text-amber-300 mt-2">保命模式已啟動：今天只要求不斷線。</p>}
           </div>
         </div>
@@ -1624,6 +1805,7 @@ export default function LifeLevelingAppV12() {
           {[
             ["today", "今日"],
             ["reward", "賞賜"],
+            ["calorie", "熱量"],
             ["record", "紀錄"],
             ["role", "角色"],
             ["energy", "能量"],
@@ -1748,7 +1930,7 @@ export default function LifeLevelingAppV12() {
               <VillageRewardCard reward={reward} unlock={unlock} insight={villageInsight} reason={rewardReason} onClaim={claimVillageReward} compact />
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
                 <h3 className="font-black">村長規則</h3>
-                <p className="text-sm text-slate-400 leading-relaxed mt-2">小爽不再放進金幣商店。每天的即時回饋交給村長賞賜；金幣則留給撞球、美食、家庭時間與真正的人生目標。賞賜卡在解鎖當下就鎖定，重整也不能洗卡。</p>
+                <p className="text-sm text-slate-400 leading-relaxed mt-2">食物不再當主要獎勵。每天的即時回饋交給村長；金幣留給撞球、完整娛樂、家庭戶外時間與人生目標。減重不是取消快樂，而是把快樂從進食之外重新建立。賞賜卡解鎖後就鎖定，重整不能洗卡。</p>
               </div>
 
               {state.pendingBoosts.length > 0 && (
@@ -1766,7 +1948,7 @@ export default function LifeLevelingAppV12() {
               )}
 
               <div>
-                <h3 className="font-black text-lg mb-2">中獎與大獎</h3>
+                <h3 className="font-black text-lg mb-2">非食物中獎與大獎</h3>
                 <div className="space-y-3">
                   {state.rewards.map((rewardItem) => {
                     const availability = getRewardAvailability(state, rewardItem);
@@ -1809,6 +1991,99 @@ export default function LifeLevelingAppV12() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </section>
+          )}
+
+          {tab === "calorie" && (
+            <section className="space-y-4">
+              <div>
+                <h2 className="text-2xl font-black">熱量守門</h2>
+                <p className="text-sm text-slate-400 mt-1">目標不是每口都算到完美，而是先知道每天大概吃了多少。</p>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm text-slate-400">今日攝取</p>
+                    <p className="text-3xl font-black mt-1">{calorieTotal} <span className="text-base text-slate-400">/ {state.calorieTarget} kcal</span></p>
+                    <p className={`text-sm mt-2 ${calorieInfo.tone === "good" ? "text-emerald-300" : calorieInfo.tone === "empty" ? "text-slate-400" : "text-amber-300"}`}>{calorieInfo.label}：{calorieInfo.message}</p>
+                  </div>
+                  <div className="rounded-2xl bg-emerald-300/10 border border-emerald-300/25 px-3 py-2 text-center shrink-0">
+                    <div className="text-xs text-slate-400">剩餘</div>
+                    <div className="font-black text-emerald-200">{Math.max(0, state.calorieTarget - calorieTotal)}</div>
+                  </div>
+                </div>
+                <div className="h-3 bg-slate-950 rounded-full overflow-hidden mt-4">
+                  <div className={`h-full ${caloriePercent <= 100 ? "bg-emerald-400" : "bg-amber-400"}`} style={{ width: `${Math.min(100, caloriePercent)}%` }} />
+                </div>
+                {caloriePercent > 100 && <p className="text-xs text-amber-300 mt-2">超出目標不扣金幣、不處罰，也不要隔天餓肚子補償。</p>}
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
+                <h3 className="font-black">新增飲食</h3>
+                <SelectInput label="餐別" value={foodDraft.mealType} onChange={(value) => setFoodDraft({ ...foodDraft, mealType: value })} options={mealTypeOptions} />
+                <TextInput label="吃了什麼" value={foodDraft.name} onChange={(value) => setFoodDraft({ ...foodDraft, name: value })} placeholder="例如：雞腿便當、拿鐵、兩顆蛋" />
+                <TextInput label="估計熱量 kcal" type="number" value={foodDraft.calories} onChange={(value) => setFoodDraft({ ...foodDraft, calories: value })} placeholder="例如：650" />
+                <button onClick={addFoodEntry} className="w-full rounded-2xl bg-emerald-300 text-emerald-950 h-12 font-black">加入今日熱量</button>
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="font-black text-lg">今日飲食紀錄</h3>
+                {state.foodEntries.length === 0 ? (
+                  <div className="bg-slate-800 border border-dashed border-slate-600 rounded-3xl p-4 text-sm text-slate-400">先記最容易超量的項目：便當、飲料、宵夜、零食。估算也比完全不記好。</div>
+                ) : state.foodEntries.map((entry) => (
+                  <div key={entry.id} className="bg-slate-800 border border-slate-700 rounded-2xl p-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-bold truncate">{entry.name}</p>
+                      <p className="text-xs text-slate-400 mt-1">{entry.mealType}・{entry.calories} kcal</p>
+                    </div>
+                    <button onClick={() => deleteFoodEntry(entry.id)} className="text-slate-500 hover:text-rose-300 px-2">刪</button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
+                <div className="flex justify-between gap-3 items-start">
+                  <div>
+                    <h3 className="font-black">體重進度</h3>
+                    <p className="text-sm text-slate-400 mt-1">目前 {Number(state.currentWeight).toFixed(1)} kg・目標 {Number(state.goalWeight).toFixed(1)} kg・尚差 {weightRemaining.toFixed(1)} kg</p>
+                    <p className="text-xs text-slate-500 mt-1">依身高 {state.heightCm} cm，現在 BMI 約 {currentBmi.toFixed(1)}。看每週趨勢，不看單日水分波動。</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input type="number" step="0.1" value={weightDraft} onChange={(event) => setWeightDraft(event.target.value)} placeholder="今天體重" className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-emerald-400" />
+                  <button onClick={saveWeight} className="rounded-2xl bg-emerald-300 text-emerald-950 px-4 font-black">記錄</button>
+                </div>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
+                <h3 className="font-black">目標設定</h3>
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1"><TextInput label={`每日熱量目標（目前 ${state.calorieTarget}）`} type="number" value={calorieTargetDraft} onChange={setCalorieTargetDraft} placeholder="例如：2000" /></div>
+                  <button onClick={saveCalorieTarget} className="rounded-2xl bg-slate-700 text-white px-4 h-11 font-bold">更新</button>
+                </div>
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1"><TextInput label={`目標體重（目前 ${Number(state.goalWeight).toFixed(1)} kg）`} type="number" value={goalWeightDraft} onChange={setGoalWeightDraft} placeholder="例如：69" /></div>
+                  <button onClick={saveGoalWeight} className="rounded-2xl bg-slate-700 text-white px-4 h-11 font-bold">更新</button>
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">目前先以 2000 kcal 作為可修改起點。這是行為紀錄工具，不是醫療處方；有三高或正在用藥時，定期讓醫師或營養師看體重與飲食趨勢。</p>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
+                <h3 className="font-black">最近熱量紀錄</h3>
+                {state.calorieHistory.length === 0 ? (
+                  <p className="text-sm text-slate-400 mt-2">跨日後，今天總熱量會自動封存。</p>
+                ) : (
+                  <div className="mt-3 space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {state.calorieHistory.slice(0, 14).map((item) => (
+                      <div key={item.date} className="flex justify-between border-b border-slate-700 pb-2 last:border-0 text-sm">
+                        <span>{item.date}</span>
+                        <span className={item.total <= item.target ? "text-emerald-300" : "text-amber-300"}>{item.total}/{item.target} kcal</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </section>
           )}
@@ -1863,7 +2138,7 @@ export default function LifeLevelingAppV12() {
                         <button key={item.date} onClick={() => setExpandedReportDate(expanded ? "" : item.date)} className="w-full text-left border-b border-slate-700 pb-3 last:border-0">
                           <div className="flex justify-between items-center gap-3"><span className="font-bold text-white text-sm">{item.date}</span><span className="text-slate-400 text-xs shrink-0">任務 {item.done}/{item.total}・待辦 {item.todoDone}/{item.todoTotal}</span></div>
                           <div className="text-amber-300 text-sm mt-1">{item.title}</div>
-                          <div className="text-slate-500 text-xs mt-1">+{item.coins || 0} 金幣 / +{item.exp || 0} EXP / 印記 {item.seals || 0}/3 / 明日已排 {item.tomorrowTotal || 0} 件</div>
+                          <div className="text-slate-500 text-xs mt-1">+{item.coins || 0} 金幣 / +{item.exp || 0} EXP / 熱量 {item.calorieTotal || 0}/{item.calorieTarget || state.calorieTarget} / 明日已排 {item.tomorrowTotal || 0} 件</div>
                           <div className="text-slate-500 text-xs mt-1">村長賞賜：{item.rewardTitle}</div>
                           {expanded && <p className="text-sm text-slate-300 mt-3 whitespace-pre-line leading-relaxed bg-slate-950 rounded-2xl p-3">{item.report}</p>}
                         </button>
@@ -1914,8 +2189,8 @@ export default function LifeLevelingAppV12() {
           {tab === "settings" && (
             <section className="space-y-3">
               <h2 className="text-2xl font-black">設定</h2>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v12.6 明日開局版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">不接 API、不花錢。村長會根據能量、主線、待辦、核心三線與近期火種，生成固定但有脈絡的判讀與賞賜理由。新增明日待辦：跨日自動進今日；未完成事項則留在待處理區，由你決定下一步。</p></div>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">資料儲存</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">固定使用 life-leveling-main-save。v9～v11 的主資料會盡量繼承；新功能會在同一個存檔下增加欄位。</p></div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v13 減重守門版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">重整金幣商店與村長賞賜，移除以美食為核心的獎勵；新增每日熱量、飲食、體重與目標體重紀錄。跨日會自動封存熱量總量，明日待辦照常搬進今日。</p></div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">資料儲存</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">固定使用 life-leveling-main-save。v9～v12.6 的主資料會盡量繼承；新功能會在同一個存檔下增加欄位。</p></div>
               <button onClick={repairTasks} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">修復預設人生主線</button>
               <button onClick={hardReset} className="w-full rounded-2xl bg-rose-900/80 text-rose-100 h-12 font-bold">全部重來</button>
             </section>
