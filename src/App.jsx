@@ -1,26 +1,70 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { initializeApp } from "firebase/app";
+import { getDatabase, get, onValue, ref as databaseRef, set as databaseSet } from "firebase/database";
 
 /*
- * 人生打怪村 v13：減重守門＋獎勵重整
+ * 人生打怪村 v13.2：三端公開同步＋減重守門
  *
  * 設計原則：
  * 1. 人生主線仍給金幣；每日待辦不給金幣，只累積村民印記（每日最多 3 枚）。
  * 2. 每天只有一張封印賞賜卡，依日期固定，不可用重整洗卡。
  * 3. 村長會依能量、主線、待辦、核心三線與近期火種，動態產生「村長觀察」與賞賜理由。
- * 4. 這是零成本、本地規則式的智慧村長：不使用 API Key、不連外、不收集資料。
+ * 4. 村長判讀仍在本機完成；遊戲存檔則透過 Firebase Realtime Database 公開共用。
  * 5. 保留明日待辦與未完成待辦：明日跨日自動移入今日；今天未完成的項目不強塞進明天。
  * 6. 新增每日熱量、飲食與體重趨勢，跨日自動封存。
- * 7. 繼續沿用固定存檔 key，不切斷 v9～v12.6 的紀錄。
+ * 7. 繼續沿用固定本機存檔 key，並讓安卓、iPad、電腦共用同一份雲端主檔。
  */
 
 const STORAGE_KEY = "life-leveling-main-save";
 const DAILY_COIN_CAP = 300;
 const MAX_REPORTS = 100;
-const VILLAGE_SYSTEM_VERSION = "13";
-const DEFAULT_CALORIE_TARGET = 2000;
+const VILLAGE_SYSTEM_VERSION = "13.2";
+const DEFAULT_CALORIE_TARGET = 1900;
+const DEFAULT_CALORIE_WARNING_LIMIT = 2000;
 const DEFAULT_CURRENT_WEIGHT = 94;
 const DEFAULT_GOAL_WEIGHT = 69;
 const TOMORROW_TODO_LIMIT = 5;
+const CLOUD_SAVE_PATH = "sharedSave";
+const CLOUD_BACKUP_PATH = "sharedBackups";
+const CLOUD_APP_VERSION = "13.2";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAaUE_5mGR7FJsEqjmyFeZPasWfxlEIN3o",
+  authDomain: "life-leveling-app-shared.firebaseapp.com",
+  databaseURL: "https://life-leveling-app-shared-default-rtdb.firebaseio.com",
+  projectId: "life-leveling-app-shared",
+  storageBucket: "life-leveling-app-shared.firebasestorage.app",
+  messagingSenderId: "337807533967",
+  appId: "1:337807533967:web:d3a8ce10f55e0fd7d50dfa",
+  measurementId: "G-CBW7MNK9EX",
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const sharedDatabase = getDatabase(firebaseApp);
+const sharedSaveReference = databaseRef(sharedDatabase, CLOUD_SAVE_PATH);
+
+function getDeviceId() {
+  const key = "life-leveling-device-id";
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const value = `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  localStorage.setItem(key, value);
+  return value;
+}
+
+function formatSyncTime(value) {
+  if (!value) return "尚未同步";
+  try {
+    return new Date(value).toLocaleString("zh-TW", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "尚未同步";
+  }
+}
 
 const OLD_STORAGE_KEYS = [
   "life-leveling-v11-economy",
@@ -660,19 +704,20 @@ function getCalorieTotal(entries) {
   );
 }
 
-function getCalorieState(total, target) {
+function getCalorieState(total, target, warningLimit = DEFAULT_CALORIE_WARNING_LIMIT) {
   const safeTarget = Math.max(1, Number(target || DEFAULT_CALORIE_TARGET));
+  const safeWarning = Math.max(safeTarget, Number(warningLimit || DEFAULT_CALORIE_WARNING_LIMIT));
   const difference = safeTarget - total;
   if (total === 0) {
     return { label: "尚未記錄", message: "先記第一餐，不必一開始就追求百分之百準確。", tone: "empty" };
   }
   if (difference >= 0) {
-    return { label: "仍在目標內", message: `今天還有約 ${difference} kcal。正常吃，不必刻意餓肚子。`, tone: "good" };
+    return { label: "仍在目標內", message: `今天距離 ${safeTarget} kcal 目標還有約 ${difference} kcal。正常吃，不必刻意餓肚子。`, tone: "good" };
   }
-  if (difference >= -200) {
-    return { label: "稍微超出", message: `目前超出約 ${Math.abs(difference)} kcal。今天不用補償性挨餓，下一餐恢復正常即可。`, tone: "warn" };
+  if (total <= safeWarning) {
+    return { label: "超過目標、仍在提醒線內", message: `目前超過目標約 ${Math.abs(difference)} kcal，但尚未超過 ${safeWarning} kcal 提醒線。`, tone: "warn" };
   }
-  return { label: "今日超出較多", message: `目前超出約 ${Math.abs(difference)} kcal。先留下紀錄，明天回到原定目標，不用極端節食。`, tone: "over" };
+  return { label: "超過今日提醒線", message: `目前已超過 ${safeWarning} kcal 提醒線約 ${total - safeWarning} kcal。留下紀錄，明天回到正常目標，不用補償性挨餓。`, tone: "over" };
 }
 
 function calculateBmi(weight, heightCm = 176) {
@@ -695,12 +740,14 @@ const initialState = {
   reportHistory: [],
   villageRewardHistory: [],
   lastReport: "尚未有自動戰報。",
-  message: "v13 減重守門版：獎勵不再以食物為中心，熱量頁先把每天吃喝看清楚。",
+  message: "v13.2 三端公開同步版：安卓、iPad、電腦共用同一份存檔；每日目標 1900 kcal、提醒線 2000 kcal。",
   tasks: clone(defaultTasks),
   todos: [],
   tomorrowTodos: [],
   backlogTodos: [],
   calorieTarget: DEFAULT_CALORIE_TARGET,
+  calorieWarningLimit: DEFAULT_CALORIE_WARNING_LIMIT,
+  calorieSystemVersion: 132,
   currentWeight: DEFAULT_CURRENT_WEIGHT,
   goalWeight: DEFAULT_GOAL_WEIGHT,
   heightCm: 176,
@@ -808,7 +855,16 @@ function normalizeState(raw) {
     : [];
   state.calorieHistory = Array.isArray(state.calorieHistory) ? state.calorieHistory : [];
   state.weightHistory = Array.isArray(state.weightHistory) ? state.weightHistory : [];
-  state.calorieTarget = Math.max(1200, Number(state.calorieTarget || DEFAULT_CALORIE_TARGET));
+  const sourceCalorieSystemVersion = Number(raw?.calorieSystemVersion || 0);
+  const savedCalorieTarget = Number(state.calorieTarget || DEFAULT_CALORIE_TARGET);
+  state.calorieTarget = sourceCalorieSystemVersion < 132 && savedCalorieTarget === 2000
+    ? DEFAULT_CALORIE_TARGET
+    : Math.max(1200, savedCalorieTarget);
+  state.calorieWarningLimit = Math.max(
+    state.calorieTarget,
+    Number(state.calorieWarningLimit || DEFAULT_CALORIE_WARNING_LIMIT)
+  );
+  state.calorieSystemVersion = 132;
   state.currentWeight = Number(state.currentWeight || DEFAULT_CURRENT_WEIGHT);
   state.goalWeight = Number(state.goalWeight || DEFAULT_GOAL_WEIGHT);
   state.heightCm = Number(state.heightCm || 176);
@@ -1249,7 +1305,7 @@ function getRewardAvailability(state, reward) {
   return { available: true, reason: "" };
 }
 
-export default function LifeLevelingAppV13() {
+export default function LifeLevelingAppV13Shared() {
   const [state, setState] = useState(() => {
     const saved = loadSavedState();
     const loaded = normalizeState(saved || initialState);
@@ -1266,10 +1322,100 @@ export default function LifeLevelingAppV13() {
   const [weightDraft, setWeightDraft] = useState("");
   const [calorieTargetDraft, setCalorieTargetDraft] = useState("");
   const [goalWeightDraft, setGoalWeightDraft] = useState("");
+  const [syncStatus, setSyncStatus] = useState("連線中");
+  const [cloudExists, setCloudExists] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState("");
+  const [syncError, setSyncError] = useState("");
+
+  const stateReference = useRef(state);
+  const applyingRemoteReference = useRef(false);
+  const cloudReadyReference = useRef(false);
+  const uploadTimerReference = useRef(null);
+  const lastCloudJsonReference = useRef("");
+  const deviceIdReference = useRef(getDeviceId());
 
   useEffect(() => {
+    stateReference.current = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+
+    if (applyingRemoteReference.current) {
+      applyingRemoteReference.current = false;
+      return;
+    }
+    if (!cloudReadyReference.current) return;
+
+    const stateJson = JSON.stringify(state);
+    if (stateJson === lastCloudJsonReference.current) return;
+
+    if (uploadTimerReference.current) window.clearTimeout(uploadTimerReference.current);
+    setSyncStatus("同步中");
+
+    uploadTimerReference.current = window.setTimeout(async () => {
+      try {
+        const currentState = stateReference.current;
+        const envelope = {
+          data: currentState,
+          updatedAt: Date.now(),
+          updatedBy: deviceIdReference.current,
+          appVersion: CLOUD_APP_VERSION,
+        };
+        lastCloudJsonReference.current = JSON.stringify(currentState);
+        await databaseSet(sharedSaveReference, envelope);
+        setCloudExists(true);
+        setLastSyncAt(envelope.updatedAt);
+        setSyncStatus("已同步");
+        setSyncError("");
+      } catch (error) {
+        setSyncStatus("同步失敗");
+        setSyncError(error?.message || "無法寫入 Firebase");
+      }
+    }, 900);
+
+    return () => {
+      if (uploadTimerReference.current) window.clearTimeout(uploadTimerReference.current);
+    };
   }, [state]);
+
+  useEffect(() => {
+    setSyncStatus("連線中");
+    const unsubscribe = onValue(
+      sharedSaveReference,
+      (snapshot) => {
+        const envelope = snapshot.val();
+        if (!envelope || !envelope.data) {
+          cloudReadyReference.current = false;
+          setCloudExists(false);
+          setSyncStatus("雲端尚未建立");
+          setSyncError("");
+          return;
+        }
+
+        const loaded = normalizeState(envelope.data);
+        const incoming = loaded.day === todayKey() ? loaded : archiveAndStartNewDay(loaded);
+        const incomingJson = JSON.stringify(incoming);
+        const currentJson = JSON.stringify(stateReference.current);
+
+        cloudReadyReference.current = true;
+        setCloudExists(true);
+        setLastSyncAt(Number(envelope.updatedAt || Date.now()));
+        setSyncStatus("已同步");
+        setSyncError("");
+        lastCloudJsonReference.current = incomingJson;
+
+        if (incomingJson !== currentJson) {
+          applyingRemoteReference.current = true;
+          stateReference.current = incoming;
+          setState(incoming);
+        }
+      },
+      (error) => {
+        cloudReadyReference.current = false;
+        setSyncStatus("連線失敗");
+        setSyncError(error?.message || "無法讀取 Firebase");
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     function checkNewDay() {
@@ -1334,7 +1480,7 @@ export default function LifeLevelingAppV13() {
   const fireStreak = getRecentFireStreak(state.fireLog, state.day);
   const tomorrowPlan = getTomorrowLaunchPlan(state.tomorrowTodos);
   const calorieTotal = getCalorieTotal(state.foodEntries);
-  const calorieInfo = getCalorieState(calorieTotal, state.calorieTarget);
+  const calorieInfo = getCalorieState(calorieTotal, state.calorieTarget, state.calorieWarningLimit);
   const caloriePercent = Math.min(120, Math.round((calorieTotal / Math.max(1, state.calorieTarget)) * 100));
   const currentBmi = calculateBmi(state.currentWeight, state.heightCm);
   const weightRemaining = Math.max(0, Number(state.currentWeight || 0) - Number(state.goalWeight || 0));
@@ -1742,8 +1888,74 @@ export default function LifeLevelingAppV13() {
     });
   }
 
+  async function uploadLocalAsCloudMain() {
+    const current = stateReference.current;
+    const confirmed = window.confirm(
+      `確定把這台裝置的資料設成三端共用主檔？\n目前金幣：${current.coins}\n目前等級：Lv.${Math.floor(current.exp / 100) + 1}\n\n第一次請只在資料完整的安卓手機執行。`
+    );
+    if (!confirmed) return;
+
+    setSyncStatus("上傳中");
+    try {
+      const existingSnapshot = await get(sharedSaveReference);
+      if (existingSnapshot.exists()) {
+        const backupReference = databaseRef(sharedDatabase, `${CLOUD_BACKUP_PATH}/${Date.now()}`);
+        await databaseSet(backupReference, existingSnapshot.val());
+      }
+
+      const envelope = {
+        data: current,
+        updatedAt: Date.now(),
+        updatedBy: deviceIdReference.current,
+        appVersion: CLOUD_APP_VERSION,
+      };
+      lastCloudJsonReference.current = JSON.stringify(current);
+      cloudReadyReference.current = true;
+      await databaseSet(sharedSaveReference, envelope);
+      setCloudExists(true);
+      setLastSyncAt(envelope.updatedAt);
+      setSyncStatus("已同步");
+      setSyncError("");
+      patch((previous) => ({ ...previous, message: "這台裝置的資料已上傳為三端共用主檔。" }));
+    } catch (error) {
+      setSyncStatus("上傳失敗");
+      setSyncError(error?.message || "無法上傳 Firebase");
+    }
+  }
+
+  async function downloadCloudMain() {
+    setSyncStatus("下載中");
+    try {
+      const snapshot = await get(sharedSaveReference);
+      const envelope = snapshot.val();
+      if (!envelope || !envelope.data) {
+        setCloudExists(false);
+        setSyncStatus("雲端尚未建立");
+        setSyncError("");
+        return;
+      }
+
+      const loaded = normalizeState(envelope.data);
+      const incoming = loaded.day === todayKey() ? loaded : archiveAndStartNewDay(loaded);
+      const incomingJson = JSON.stringify(incoming);
+      lastCloudJsonReference.current = incomingJson;
+      applyingRemoteReference.current = true;
+      stateReference.current = incoming;
+      setState(incoming);
+      cloudReadyReference.current = true;
+      setCloudExists(true);
+      setLastSyncAt(Number(envelope.updatedAt || Date.now()));
+      setSyncStatus("已同步");
+      setSyncError("");
+      setTab("today");
+    } catch (error) {
+      setSyncStatus("下載失敗");
+      setSyncError(error?.message || "無法下載 Firebase");
+    }
+  }
+
   function hardReset() {
-    if (!window.confirm("確定全部重來？金幣、等級、待辦、熱量、體重、歷史戰報與村長賞賜都會清空。")) return;
+    if (!window.confirm("確定全部重來？這會清空本機資料，並在同步後清空安卓、iPad、電腦共用主檔。")) return;
     setState(clone(initialState));
     setTab("today");
   }
@@ -1754,12 +1966,12 @@ export default function LifeLevelingAppV13() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v13 減重守門版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v13.2 三端公開同步版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
               </div>
-              <p className="text-xs text-slate-500 mt-2">{state.day}</p>
+              <p className="text-xs text-slate-500 mt-2">{state.day}・{syncStatus}</p>
             </div>
             <div className="w-16 h-16 rounded-3xl bg-amber-400/15 border border-amber-300/40 flex items-center justify-center shadow-[0_0_28px_rgba(251,191,36,0.18)]">
               <span className="text-3xl font-black text-amber-300">村</span>
@@ -1796,7 +2008,7 @@ export default function LifeLevelingAppV13() {
               <span className="text-xs px-2 py-1 rounded-full bg-amber-300/15 text-amber-300 border border-amber-300/20">{dailyTitle}</span>
             </div>
             <p className="text-base font-bold text-white leading-relaxed">{battleMessage}</p>
-            <p className="text-xs text-slate-500 mt-3">每日金幣上限 {DAILY_COIN_CAP}；今天熱量 {calorieTotal}/{state.calorieTarget} kcal。</p>
+            <p className="text-xs text-slate-500 mt-3">每日金幣上限 {DAILY_COIN_CAP}；熱量目標 {calorieTotal}/{state.calorieTarget} kcal，提醒線 {state.calorieWarningLimit} kcal。</p>
             {isSurvival && <p className="text-sm text-amber-300 mt-2">保命模式已啟動：今天只要求不斷線。</p>}
           </div>
         </div>
@@ -2007,6 +2219,7 @@ export default function LifeLevelingAppV13() {
                   <div>
                     <p className="text-sm text-slate-400">今日攝取</p>
                     <p className="text-3xl font-black mt-1">{calorieTotal} <span className="text-base text-slate-400">/ {state.calorieTarget} kcal</span></p>
+                    <p className="text-xs text-slate-500 mt-1">提醒上限：{state.calorieWarningLimit} kcal</p>
                     <p className={`text-sm mt-2 ${calorieInfo.tone === "good" ? "text-emerald-300" : calorieInfo.tone === "empty" ? "text-slate-400" : "text-amber-300"}`}>{calorieInfo.label}：{calorieInfo.message}</p>
                   </div>
                   <div className="rounded-2xl bg-emerald-300/10 border border-emerald-300/25 px-3 py-2 text-center shrink-0">
@@ -2060,14 +2273,14 @@ export default function LifeLevelingAppV13() {
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                 <h3 className="font-black">目標設定</h3>
                 <div className="flex gap-2 items-end">
-                  <div className="flex-1"><TextInput label={`每日熱量目標（目前 ${state.calorieTarget}）`} type="number" value={calorieTargetDraft} onChange={setCalorieTargetDraft} placeholder="例如：2000" /></div>
+                  <div className="flex-1"><TextInput label={`每日熱量目標（目前 ${state.calorieTarget}）`} type="number" value={calorieTargetDraft} onChange={setCalorieTargetDraft} placeholder="例如：1900" /></div>
                   <button onClick={saveCalorieTarget} className="rounded-2xl bg-slate-700 text-white px-4 h-11 font-bold">更新</button>
                 </div>
                 <div className="flex gap-2 items-end">
                   <div className="flex-1"><TextInput label={`目標體重（目前 ${Number(state.goalWeight).toFixed(1)} kg）`} type="number" value={goalWeightDraft} onChange={setGoalWeightDraft} placeholder="例如：69" /></div>
                   <button onClick={saveGoalWeight} className="rounded-2xl bg-slate-700 text-white px-4 h-11 font-bold">更新</button>
                 </div>
-                <p className="text-xs text-slate-500 leading-relaxed">目前先以 2000 kcal 作為可修改起點。這是行為紀錄工具，不是醫療處方；有三高或正在用藥時，定期讓醫師或營養師看體重與飲食趨勢。</p>
+                <p className="text-xs text-slate-500 leading-relaxed">目前以 1900 kcal 為每日目標、2000 kcal 為提醒線。超過不扣金幣、不判定失敗；先觀察兩週體重平均再調整。這是行為紀錄工具，不是醫療處方。</p>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
@@ -2189,8 +2402,29 @@ export default function LifeLevelingAppV13() {
           {tab === "settings" && (
             <section className="space-y-3">
               <h2 className="text-2xl font-black">設定</h2>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v13 減重守門版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">重整金幣商店與村長賞賜，移除以美食為核心的獎勵；新增每日熱量、飲食、體重與目標體重紀錄。跨日會自動封存熱量總量，明日待辦照常搬進今日。</p></div>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">資料儲存</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">固定使用 life-leveling-main-save。v9～v12.6 的主資料會盡量繼承；新功能會在同一個存檔下增加欄位。</p></div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v13.2 三端公開同步版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">安卓、iPad、電腦共用 Firebase 的同一份主存檔。村長、待辦、熱量、體重、金幣和戰報都會同步；本機仍保留離線暫存。</p></div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
+                <div className="flex justify-between items-start gap-3">
+                  <div>
+                    <h3 className="font-black">三端共用存檔</h3>
+                    <p className="text-sm text-slate-300 mt-1">狀態：{syncStatus}</p>
+                    <p className="text-xs text-slate-500 mt-1">{cloudExists ? `上次同步：${formatSyncTime(lastSyncAt)}` : "雲端目前是空的，尚未建立共用主檔。"}</p>
+                    {syncError && <p className="text-xs text-rose-300 mt-2 break-words">{syncError}</p>}
+                  </div>
+                  <span className={`text-xs px-2 py-1 rounded-full border ${cloudExists ? "bg-emerald-300/10 text-emerald-300 border-emerald-300/30" : "bg-amber-300/10 text-amber-300 border-amber-300/30"}`}>
+                    {cloudExists ? "雲端已建立" : "等待首次上傳"}
+                  </span>
+                </div>
+                <div className="rounded-2xl bg-slate-950 border border-slate-700 p-3 text-sm text-slate-300 leading-relaxed">
+                  第一次部署後，請先在目前有 1895 金幣與完整紀錄的安卓手機，按「上傳這台資料為主檔」。成功後再開 iPad 和電腦。
+                </div>
+                <button onClick={uploadLocalAsCloudMain} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">上傳這台資料為共用主檔</button>
+                <button onClick={downloadCloudMain} disabled={!cloudExists} className={`w-full rounded-2xl h-12 font-black ${cloudExists ? "bg-emerald-300 text-emerald-950" : "bg-slate-700 text-slate-500"}`}>下載雲端主檔到這台</button>
+                <p className="text-xs text-slate-500 leading-relaxed">雲端主檔建立後，平常每次修改約 1 秒自動同步。兩台同時修改時，以最後寫入的內容為準。</p>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">本機備援</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">仍固定使用 life-leveling-main-save。斷網時可繼續操作，恢復連線後會把最新本機狀態同步到公開共用主檔。</p></div>
               <button onClick={repairTasks} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">修復預設人生主線</button>
               <button onClick={hardReset} className="w-full rounded-2xl bg-rose-900/80 text-rose-100 h-12 font-bold">全部重來</button>
             </section>
