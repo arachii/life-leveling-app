@@ -1,24 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, get, onValue, ref as databaseRef, set as databaseSet } from "firebase/database";
+import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 
 /*
- * 人生打怪村 v13.2：三端公開同步＋減重守門
+ * 人生打怪村 v13.3：三端安靜同步＋減重守門
  *
  * 設計原則：
  * 1. 人生主線仍給金幣；每日待辦不給金幣，只累積村民印記（每日最多 3 枚）。
  * 2. 每天只有一張封印賞賜卡，依日期固定，不可用重整洗卡。
  * 3. 村長會依能量、主線、待辦、核心三線與近期火種，動態產生「村長觀察」與賞賜理由。
- * 4. 村長判讀仍在本機完成；遊戲存檔則透過 Firebase Realtime Database 公開共用。
+ * 4. 村長判讀仍在本機完成；遊戲存檔透過 Firebase Realtime Database 共用，並自動匿名登入。
  * 5. 保留明日待辦與未完成待辦：明日跨日自動移入今日；今天未完成的項目不強塞進明天。
  * 6. 新增每日熱量、飲食與體重趨勢，跨日自動封存。
- * 7. 繼續沿用固定本機存檔 key，並讓安卓、iPad、電腦共用同一份雲端主檔。
+ * 7. 繼續沿用固定本機存檔 key，安卓、iPad、電腦共用同一份雲端主檔；不用輸入帳號密碼。
  */
 
 const STORAGE_KEY = "life-leveling-main-save";
 const DAILY_COIN_CAP = 300;
 const MAX_REPORTS = 100;
-const VILLAGE_SYSTEM_VERSION = "13.2";
+const VILLAGE_SYSTEM_VERSION = "13.3";
 const DEFAULT_CALORIE_TARGET = 1900;
 const DEFAULT_CALORIE_WARNING_LIMIT = 2000;
 const DEFAULT_CURRENT_WEIGHT = 94;
@@ -26,7 +27,7 @@ const DEFAULT_GOAL_WEIGHT = 69;
 const TOMORROW_TODO_LIMIT = 5;
 const CLOUD_SAVE_PATH = "sharedSave";
 const CLOUD_BACKUP_PATH = "sharedBackups";
-const CLOUD_APP_VERSION = "13.2";
+const CLOUD_APP_VERSION = "13.3";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAaUE_5mGR7FJsEqjmyFeZPasWfxlEIN3o",
@@ -40,6 +41,7 @@ const firebaseConfig = {
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
+const sharedAuth = getAuth(firebaseApp);
 const sharedDatabase = getDatabase(firebaseApp);
 const sharedSaveReference = databaseRef(sharedDatabase, CLOUD_SAVE_PATH);
 
@@ -740,7 +742,7 @@ const initialState = {
   reportHistory: [],
   villageRewardHistory: [],
   lastReport: "尚未有自動戰報。",
-  message: "v13.2 三端公開同步版：安卓、iPad、電腦共用同一份存檔；每日目標 1900 kcal、提醒線 2000 kcal。",
+  message: "v13.3 三端安靜同步版：安卓、iPad、電腦共用同一份存檔；每日目標 1900 kcal、提醒線 2000 kcal。",
   tasks: clone(defaultTasks),
   todos: [],
   tomorrowTodos: [],
@@ -1326,6 +1328,8 @@ export default function LifeLevelingAppV13Shared() {
   const [cloudExists, setCloudExists] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState("");
   const [syncError, setSyncError] = useState("");
+  const [authReady, setAuthReady] = useState(false);
+  const [authStatus, setAuthStatus] = useState("匿名連線中");
 
   const stateReference = useRef(state);
   const applyingRemoteReference = useRef(false);
@@ -1335,6 +1339,29 @@ export default function LifeLevelingAppV13Shared() {
   const deviceIdReference = useRef(getDeviceId());
 
   useEffect(() => {
+    setAuthStatus("匿名連線中");
+
+    const unsubscribeAuth = onAuthStateChanged(sharedAuth, async (user) => {
+      if (user) {
+        setAuthReady(true);
+        setAuthStatus("匿名連線完成");
+        return;
+      }
+
+      try {
+        await signInAnonymously(sharedAuth);
+      } catch (error) {
+        setAuthReady(false);
+        setAuthStatus("匿名連線失敗");
+        setSyncStatus("連線失敗");
+        setSyncError(error?.message || "無法匿名登入 Firebase");
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
     stateReference.current = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 
@@ -1342,7 +1369,7 @@ export default function LifeLevelingAppV13Shared() {
       applyingRemoteReference.current = false;
       return;
     }
-    if (!cloudReadyReference.current) return;
+    if (!authReady || !cloudReadyReference.current) return;
 
     const stateJson = JSON.stringify(state);
     if (stateJson === lastCloudJsonReference.current) return;
@@ -1374,9 +1401,11 @@ export default function LifeLevelingAppV13Shared() {
     return () => {
       if (uploadTimerReference.current) window.clearTimeout(uploadTimerReference.current);
     };
-  }, [state]);
+  }, [state, authReady]);
 
   useEffect(() => {
+    if (!authReady) return undefined;
+
     setSyncStatus("連線中");
     const unsubscribe = onValue(
       sharedSaveReference,
@@ -1415,7 +1444,7 @@ export default function LifeLevelingAppV13Shared() {
       }
     );
     return () => unsubscribe();
-  }, []);
+  }, [authReady]);
 
   useEffect(() => {
     function checkNewDay() {
@@ -1889,6 +1918,11 @@ export default function LifeLevelingAppV13Shared() {
   }
 
   async function uploadLocalAsCloudMain() {
+    if (!authReady) {
+      setSyncStatus("等待匿名連線");
+      setSyncError("Firebase 匿名連線尚未完成，請等幾秒再試。");
+      return;
+    }
     const current = stateReference.current;
     const confirmed = window.confirm(
       `確定把這台裝置的資料設成三端共用主檔？\n目前金幣：${current.coins}\n目前等級：Lv.${Math.floor(current.exp / 100) + 1}\n\n第一次請只在資料完整的安卓手機執行。`
@@ -1924,6 +1958,11 @@ export default function LifeLevelingAppV13Shared() {
   }
 
   async function downloadCloudMain() {
+    if (!authReady) {
+      setSyncStatus("等待匿名連線");
+      setSyncError("Firebase 匿名連線尚未完成，請等幾秒再試。");
+      return;
+    }
     setSyncStatus("下載中");
     try {
       const snapshot = await get(sharedSaveReference);
@@ -1966,7 +2005,7 @@ export default function LifeLevelingAppV13Shared() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v13.2 三端公開同步版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v13.3 三端安靜同步版</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -2402,13 +2441,14 @@ export default function LifeLevelingAppV13Shared() {
           {tab === "settings" && (
             <section className="space-y-3">
               <h2 className="text-2xl font-black">設定</h2>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v13.2 三端公開同步版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">安卓、iPad、電腦共用 Firebase 的同一份主存檔。村長、待辦、熱量、體重、金幣和戰報都會同步；本機仍保留離線暫存。</p></div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v13.3 三端安靜同步版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">安卓、iPad、電腦共用 Firebase 的同一份主存檔。App 會自動匿名連線，不用輸入帳號密碼；村長、待辦、熱量、體重、金幣和戰報都會同步。</p></div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                 <div className="flex justify-between items-start gap-3">
                   <div>
                     <h3 className="font-black">三端共用存檔</h3>
                     <p className="text-sm text-slate-300 mt-1">狀態：{syncStatus}</p>
+                    <p className="text-xs text-slate-500 mt-1">Firebase：{authStatus}</p>
                     <p className="text-xs text-slate-500 mt-1">{cloudExists ? `上次同步：${formatSyncTime(lastSyncAt)}` : "雲端目前是空的，尚未建立共用主檔。"}</p>
                     {syncError && <p className="text-xs text-rose-300 mt-2 break-words">{syncError}</p>}
                   </div>
@@ -2422,6 +2462,7 @@ export default function LifeLevelingAppV13Shared() {
                 <button onClick={uploadLocalAsCloudMain} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">上傳這台資料為共用主檔</button>
                 <button onClick={downloadCloudMain} disabled={!cloudExists} className={`w-full rounded-2xl h-12 font-black ${cloudExists ? "bg-emerald-300 text-emerald-950" : "bg-slate-700 text-slate-500"}`}>下載雲端主檔到這台</button>
                 <p className="text-xs text-slate-500 leading-relaxed">雲端主檔建立後，平常每次修改約 1 秒自動同步。兩台同時修改時，以最後寫入的內容為準。</p>
+                <p className="text-xs text-emerald-300/80 leading-relaxed">v13.3 改用匿名驗證，不需要公開整個資料庫，可把 Firebase 規則改成 auth != null，避免公開規則警告信一直寄來。</p>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">本機備援</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">仍固定使用 life-leveling-main-save。斷網時可繼續操作，恢復連線後會把最新本機狀態同步到公開共用主檔。</p></div>
