@@ -4,7 +4,7 @@ import { getDatabase, get, onValue, ref as databaseRef, set as databaseSet } fro
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 
 /*
- * 人生打怪村 v13.3：三端安靜同步＋減重守門
+ * 人生打怪村 v14：原則之書＋三端安靜同步＋減重守門
  *
  * 設計原則：
  * 1. 人生主線仍給金幣；每日待辦不給金幣，只累積村民印記（每日最多 3 枚）。
@@ -14,20 +14,23 @@ import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
  * 5. 保留明日待辦與未完成待辦：明日跨日自動移入今日；今天未完成的項目不強塞進明天。
  * 6. 新增每日熱量、飲食與體重趨勢，跨日自動封存。
  * 7. 繼續沿用固定本機存檔 key，安卓、iPad、電腦共用同一份雲端主檔；不用輸入帳號密碼。
+ * 8. v14 新增「戰後復盤 → 原則之書 → Boss 圖鑑」：失敗不扣分，轉成智慧值與可驗證的人生原則。
  */
 
 const STORAGE_KEY = "life-leveling-main-save";
 const DAILY_COIN_CAP = 300;
 const MAX_REPORTS = 100;
-const VILLAGE_SYSTEM_VERSION = "13.3";
+const VILLAGE_SYSTEM_VERSION = "14.0";
 const DEFAULT_CALORIE_TARGET = 1900;
 const DEFAULT_CALORIE_WARNING_LIMIT = 2000;
 const DEFAULT_CURRENT_WEIGHT = 94;
 const DEFAULT_GOAL_WEIGHT = 69;
 const TOMORROW_TODO_LIMIT = 5;
+const MAX_REFLECTIONS = 180;
+const MAX_PRINCIPLES = 100;
 const CLOUD_SAVE_PATH = "sharedSave";
 const CLOUD_BACKUP_PATH = "sharedBackups";
-const CLOUD_APP_VERSION = "13.3";
+const CLOUD_APP_VERSION = "14.0";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAaUE_5mGR7FJsEqjmyFeZPasWfxlEIN3o",
@@ -728,6 +731,67 @@ function calculateBmi(weight, heightCm = 176) {
   return Number(weight) / (meters * meters);
 }
 
+
+function createBlankReflection(day = todayKey()) {
+  return {
+    date: day,
+    didRight: "",
+    stuck: "",
+    nextRule: "",
+    bossTag: "",
+    savedAt: "",
+  };
+}
+
+function normalizeReflection(item, fallbackDay = todayKey()) {
+  return {
+    date: String(item?.date || fallbackDay),
+    didRight: String(item?.didRight || ""),
+    stuck: String(item?.stuck || ""),
+    nextRule: String(item?.nextRule || ""),
+    bossTag: String(item?.bossTag || ""),
+    savedAt: String(item?.savedAt || ""),
+  };
+}
+
+function normalizePrinciple(item) {
+  const usageDates = Array.isArray(item?.usageDates) ? [...new Set(item.usageDates.filter(Boolean))] : [];
+  return {
+    id: item?.id || `principle-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: String(item?.title || "").trim(),
+    category: item?.category || "決策",
+    createdAt: item?.createdAt || new Date().toISOString(),
+    sourceDate: item?.sourceDate || "",
+    usageDates,
+    xp: Math.max(Number(item?.xp || usageDates.length || 0), usageDates.length),
+  };
+}
+
+function normalizeBoss(item) {
+  const dates = Array.isArray(item?.dates) ? [...new Set(item.dates.filter(Boolean))] : [];
+  return {
+    id: item?.id || `boss-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: String(item?.name || "").trim(),
+    dates,
+    firstSeen: item?.firstSeen || dates[0] || "",
+    lastSeen: item?.lastSeen || dates[dates.length - 1] || "",
+    status: item?.status === "defeated" ? "defeated" : "active",
+  };
+}
+
+function principleStage(xp) {
+  const value = Number(xp || 0);
+  if (value >= 20) return { label: "核心原則", next: "已成為你的核心規則" };
+  if (value >= 5) return { label: "穩定原則", next: `再驗證 ${20 - value} 次升為核心原則` };
+  return { label: "實驗原則", next: `再驗證 ${5 - value} 次升為穩定原則` };
+}
+
+function bossRank(count) {
+  if (count >= 6) return "頭目級";
+  if (count >= 3) return "Boss 已成形";
+  return "問題蹤跡";
+}
+
 const initialState = {
   day: todayKey(),
   coins: 0,
@@ -738,11 +802,17 @@ const initialState = {
   totalTasks: 0,
   totalCoinsEarned: 0,
   settledDays: 0,
+  wisdom: 0,
+  principleSystemVersion: 14,
+  dailyReflection: createBlankReflection(),
+  reflectionHistory: [],
+  principles: [],
+  bossBook: [],
   fireLog: [],
   reportHistory: [],
   villageRewardHistory: [],
   lastReport: "尚未有自動戰報。",
-  message: "v13.3 三端安靜同步版：安卓、iPad、電腦共用同一份存檔；每日目標 1900 kcal、提醒線 2000 kcal。",
+  message: "v14 原則之書：任務拿金幣，復盤與驗證原則拿智慧值；三端仍共用同一份 Firebase 存檔。",
   tasks: clone(defaultTasks),
   todos: [],
   tomorrowTodos: [],
@@ -886,10 +956,24 @@ function normalizeState(raw) {
   state.fireLog = Array.isArray(state.fireLog) ? state.fireLog : [];
   state.reportHistory = Array.isArray(state.reportHistory) ? state.reportHistory : [];
   state.villageRewardHistory = Array.isArray(state.villageRewardHistory) ? state.villageRewardHistory : [];
+  state.wisdom = Number(state.wisdom || 0);
+  state.principleSystemVersion = 14;
+  state.dailyReflection = state.dailyReflection?.date === state.day
+    ? normalizeReflection(state.dailyReflection, state.day)
+    : createBlankReflection(state.day);
+  state.reflectionHistory = Array.isArray(state.reflectionHistory)
+    ? state.reflectionHistory.map((item) => normalizeReflection(item)).filter((item) => item.date).slice(0, MAX_REFLECTIONS)
+    : [];
+  state.principles = Array.isArray(state.principles)
+    ? state.principles.map(normalizePrinciple).filter((item) => item.title).slice(0, MAX_PRINCIPLES)
+    : [];
+  state.bossBook = Array.isArray(state.bossBook)
+    ? state.bossBook.map(normalizeBoss).filter((item) => item.name)
+    : [];
   state.goalFunds = { ...initialState.goalFunds, ...(state.goalFunds || {}) };
   state.attrs = { ...initialState.attrs, ...(state.attrs || {}) };
 
-  ["coins", "exp", "energy", "todayCoins", "todayExp", "totalTasks", "totalCoinsEarned", "settledDays"].forEach((key) => {
+  ["coins", "exp", "energy", "todayCoins", "todayExp", "totalTasks", "totalCoinsEarned", "settledDays", "wisdom"].forEach((key) => {
     state[key] = Number(state[key] || 0);
   });
 
@@ -1193,13 +1277,14 @@ function archiveAndStartNewDay(state) {
     tomorrowTodos: [],
     backlogTodos,
     foodEntries: [],
+    dailyReflection: createBlankReflection(newDay),
     dailyReward: createDailyReward(newDay),
     energy: 70,
     todayCoins: 0,
     todayExp: 0,
     recoveryUsedDay: "",
     coupons: archived.coupons.filter((coupon) => !isExpiredCoupon(coupon, newDay)),
-    message: `昨天的戰報已自動保存：${oldTitle}。明日待辦已搬進今天；未完成的項目放進待處理區，等你自己決定。`,
+    message: `昨天的戰報已自動保存：${oldTitle}。新的戰後復盤已開啟；明日待辦已搬進今天。`,
   };
 }
 
@@ -1307,7 +1392,7 @@ function getRewardAvailability(state, reward) {
   return { available: true, reason: "" };
 }
 
-export default function LifeLevelingAppV13Shared() {
+export default function LifeLevelingAppV14Principles() {
   const [state, setState] = useState(() => {
     const saved = loadSavedState();
     const loaded = normalizeState(saved || initialState);
@@ -1324,6 +1409,8 @@ export default function LifeLevelingAppV13Shared() {
   const [weightDraft, setWeightDraft] = useState("");
   const [calorieTargetDraft, setCalorieTargetDraft] = useState("");
   const [goalWeightDraft, setGoalWeightDraft] = useState("");
+  const [reflectionDraft, setReflectionDraft] = useState(() => ({ ...state.dailyReflection }));
+  const [principleDraft, setPrincipleDraft] = useState({ title: "", category: "決策" });
   const [syncStatus, setSyncStatus] = useState("連線中");
   const [cloudExists, setCloudExists] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState("");
@@ -1461,6 +1548,10 @@ export default function LifeLevelingAppV13Shared() {
     };
   }, []);
 
+  useEffect(() => {
+    setReflectionDraft({ ...state.dailyReflection });
+  }, [state.day, state.dailyReflection?.savedAt]);
+
   // 賞賜一旦解鎖就鎖定，避免調整能量、勾回待辦或重整頁面洗卡。
   useEffect(() => {
     setState((previous) => {
@@ -1513,6 +1604,8 @@ export default function LifeLevelingAppV13Shared() {
   const caloriePercent = Math.min(120, Math.round((calorieTotal / Math.max(1, state.calorieTarget)) * 100));
   const currentBmi = calculateBmi(state.currentWeight, state.heightCm);
   const weightRemaining = Math.max(0, Number(state.currentWeight || 0) - Number(state.goalWeight || 0));
+  const activeBossCount = state.bossBook.filter((boss) => boss.status !== "defeated" && boss.dates.length >= 3).length;
+  const corePrincipleCount = state.principles.filter((principle) => principleStage(principle.xp).label === "核心原則").length;
 
   function patch(updater) {
     setState((previous) => {
@@ -1993,6 +2086,146 @@ export default function LifeLevelingAppV13Shared() {
     }
   }
 
+  function saveDailyReflection() {
+    const didRight = String(reflectionDraft.didRight || "").trim();
+    const stuck = String(reflectionDraft.stuck || "").trim();
+    const nextRule = String(reflectionDraft.nextRule || "").trim();
+    const bossTag = String(reflectionDraft.bossTag || "").trim();
+
+    if (!didRight && !stuck && !nextRule) {
+      patch((previous) => ({ ...previous, message: "戰後復盤至少寫一項：做對、卡住，或下次原則。" }));
+      return;
+    }
+
+    patch((previous) => {
+      const alreadyRecorded = previous.reflectionHistory.some((item) => item.date === previous.day);
+      const record = {
+        date: previous.day,
+        didRight,
+        stuck,
+        nextRule,
+        bossTag,
+        savedAt: new Date().toISOString(),
+      };
+
+      let bossBook = previous.bossBook;
+      if (bossTag) {
+        const normalizedTag = bossTag.toLocaleLowerCase("zh-TW");
+        const existing = bossBook.find((boss) => boss.name.toLocaleLowerCase("zh-TW") === normalizedTag);
+        if (existing) {
+          const dates = existing.dates.includes(previous.day) ? existing.dates : [...existing.dates, previous.day];
+          bossBook = bossBook.map((boss) => boss.id === existing.id
+            ? { ...boss, dates, firstSeen: boss.firstSeen || dates[0], lastSeen: previous.day }
+            : boss
+          );
+        } else {
+          bossBook = [
+            {
+              id: `boss-${Date.now()}`,
+              name: bossTag,
+              dates: [previous.day],
+              firstSeen: previous.day,
+              lastSeen: previous.day,
+              status: "active",
+            },
+            ...bossBook,
+          ];
+        }
+      }
+
+      return {
+        ...previous,
+        dailyReflection: record,
+        reflectionHistory: [record, ...previous.reflectionHistory.filter((item) => item.date !== previous.day)].slice(0, MAX_REFLECTIONS),
+        bossBook,
+        wisdom: previous.wisdom + (alreadyRecorded ? 0 : 10),
+        message: alreadyRecorded
+          ? "今日戰後復盤已更新。修改內容不重複刷智慧值。"
+          : "完成今日戰後復盤：智慧 +10。失敗已轉成情報，不扣分。",
+      };
+    });
+  }
+
+  function promoteReflectionToPrinciple() {
+    patch((previous) => {
+      const title = String(previous.dailyReflection?.nextRule || reflectionDraft.nextRule || "").trim();
+      if (!title) return { ...previous, message: "先在『下次遇到同類事情，我要怎麼做？』寫下一條規則。" };
+      const duplicate = previous.principles.find((item) => item.title.toLocaleLowerCase("zh-TW") === title.toLocaleLowerCase("zh-TW"));
+      if (duplicate) return { ...previous, message: `「${title}」已經在原則之書，不重複建立。` };
+
+      const principle = {
+        id: `principle-${Date.now()}`,
+        title,
+        category: "決策",
+        createdAt: new Date().toISOString(),
+        sourceDate: previous.day,
+        usageDates: [],
+        xp: 0,
+      };
+      return {
+        ...previous,
+        principles: [principle, ...previous.principles].slice(0, MAX_PRINCIPLES),
+        wisdom: previous.wisdom + 5,
+        message: `已提煉新原則：「${title}」。智慧 +5，接下來靠實際驗證升級。`,
+      };
+    });
+  }
+
+  function addManualPrinciple() {
+    const title = String(principleDraft.title || "").trim();
+    if (!title) return;
+    patch((previous) => {
+      const duplicate = previous.principles.find((item) => item.title.toLocaleLowerCase("zh-TW") === title.toLocaleLowerCase("zh-TW"));
+      if (duplicate) return { ...previous, message: `「${title}」已經存在。` };
+      const principle = {
+        id: `principle-${Date.now()}`,
+        title,
+        category: principleDraft.category || "決策",
+        createdAt: new Date().toISOString(),
+        sourceDate: "",
+        usageDates: [],
+        xp: 0,
+      };
+      return { ...previous, principles: [principle, ...previous.principles].slice(0, MAX_PRINCIPLES), message: `已加入實驗原則：「${title}」。` };
+    });
+    setPrincipleDraft({ title: "", category: "決策" });
+  }
+
+  function markPrincipleUsed(id) {
+    patch((previous) => {
+      const principle = previous.principles.find((item) => item.id === id);
+      if (!principle) return previous;
+      if (principle.usageDates.includes(previous.day)) {
+        return { ...previous, message: "這條原則今天已驗證過一次，不能靠重複點擊刷智慧值。" };
+      }
+      const usageDates = [...principle.usageDates, previous.day];
+      const xp = Number(principle.xp || 0) + 1;
+      const stage = principleStage(xp);
+      return {
+        ...previous,
+        principles: previous.principles.map((item) => item.id === id ? { ...item, usageDates, xp } : item),
+        wisdom: previous.wisdom + 2,
+        message: `原則驗證 +1、智慧 +2。目前：${stage.label}。`,
+      };
+    });
+  }
+
+  function deletePrinciple(id) {
+    patch((previous) => ({
+      ...previous,
+      principles: previous.principles.filter((item) => item.id !== id),
+      message: "已從原則之書移除。",
+    }));
+  }
+
+  function setBossStatus(id, status) {
+    patch((previous) => ({
+      ...previous,
+      bossBook: previous.bossBook.map((boss) => boss.id === id ? { ...boss, status } : boss),
+      message: status === "defeated" ? "這隻 Boss 已標記為破解。之後若再次出現，紀錄仍會保留。" : "Boss 已重新列入戰鬥中。",
+    }));
+  }
+
   function hardReset() {
     if (!window.confirm("確定全部重來？這會清空本機資料，並在同步後清空安卓、iPad、電腦共用主檔。")) return;
     setState(clone(initialState));
@@ -2005,7 +2238,7 @@ export default function LifeLevelingAppV13Shared() {
         <header className="p-5 bg-[radial-gradient(circle_at_top_right,rgba(251,191,36,0.16),transparent_38%),linear-gradient(135deg,#1e293b,#020617)]">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div className="min-w-0">
-              <p className="text-sm text-slate-400">人生打怪村 v13.3 三端安靜同步版</p>
+              <p className="text-sm text-slate-400">人生打怪村 v14 原則之書</p>
               <h1 className="text-3xl font-black tracking-tight mt-1">邱顯明 Lv.{level}</h1>
               <div className="inline-flex mt-2 px-3 py-1 rounded-full bg-amber-300/15 border border-amber-300/30 text-amber-300 text-sm font-bold">
                 {getPlayerTitle(level)}
@@ -2017,8 +2250,9 @@ export default function LifeLevelingAppV13Shared() {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-2">
             <StatCard label="金幣" value={state.coins} />
+            <StatCard label="智慧" value={state.wisdom} />
             <StatCard label="能量" value={remainingEnergy} />
             <StatCard label="完成" value={`${completedTasks.length}/${visibleTasks.length}`} />
           </div>
@@ -2055,6 +2289,7 @@ export default function LifeLevelingAppV13Shared() {
         <nav className="px-4 grid grid-cols-3 gap-2 pb-2 sticky top-0 bg-slate-900/95 backdrop-blur z-10">
           {[
             ["today", "今日"],
+            ["principles", "原則"],
             ["reward", "賞賜"],
             ["calorie", "熱量"],
             ["record", "紀錄"],
@@ -2169,6 +2404,116 @@ export default function LifeLevelingAppV13Shared() {
                     <p className="text-sm text-slate-400 mt-1">昨天沒做完的事不會硬塞進今天。你自己決定要搬、延後或刪掉。</p>
                   </div>
                   {state.backlogTodos.map((todo) => <BacklogTodoCard key={todo.id} todo={todo} onToday={moveBacklogToToday} onTomorrow={moveBacklogToTomorrow} onDelete={deleteBacklogTodo} />)}
+                </div>
+              )}
+            </section>
+          )}
+
+          {tab === "principles" && (
+            <section className="space-y-4">
+              <div>
+                <h2 className="text-2xl font-black">原則之書</h2>
+                <p className="text-sm text-slate-400 mt-1">流程：事件 → 復盤 → 提煉原則 → 實際驗證。失敗不扣分，能看懂失敗就有價值。</p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <RecordBox label="智慧值" value={state.wisdom} />
+                <RecordBox label="原則" value={state.principles.length} />
+                <RecordBox label="活躍 Boss" value={activeBossCount} />
+              </div>
+
+              <div className="bg-slate-800 border border-amber-400/30 rounded-3xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs text-amber-300 font-bold">每日一次・智慧 +10</p>
+                    <h3 className="text-lg font-black mt-1">戰後復盤</h3>
+                  </div>
+                  <span className="text-xs rounded-full border border-slate-600 px-2 py-1 text-slate-400">{state.day}</span>
+                </div>
+                <TextAreaInput label="1. 今天做對了什麼？" value={reflectionDraft.didRight} onChange={(value) => setReflectionDraft((draft) => ({ ...draft, didRight: value }))} placeholder="例如：雖然不想打電話，還是先完成第一通。" />
+                <TextAreaInput label="2. 今天哪裡卡住／失敗？" value={reflectionDraft.stuck} onChange={(value) => setReflectionDraft((draft) => ({ ...draft, stuck: value }))} placeholder="寫事實，不需要責怪自己。" />
+                <TextAreaInput label="3. 下次遇到同類事情，我要怎麼做？" value={reflectionDraft.nextRule} onChange={(value) => setReflectionDraft((draft) => ({ ...draft, nextRule: value }))} placeholder="例如：害怕開始時，只要求自己先做 10 分鐘。" />
+                <TextInput label="Boss 標籤（可選，同一問題請用同一名稱）" value={reflectionDraft.bossTag} onChange={(value) => setReflectionDraft((draft) => ({ ...draft, bossTag: value }))} placeholder="例如：拖延、衝動消費、熬夜" />
+                <button onClick={saveDailyReflection} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">保存今日復盤</button>
+                {(state.dailyReflection?.nextRule || reflectionDraft.nextRule) && (
+                  <button onClick={promoteReflectionToPrinciple} className="w-full rounded-2xl bg-slate-950 text-amber-200 border border-amber-300/30 h-12 font-black">把第 3 題提煉成原則</button>
+                )}
+                <p className="text-xs text-slate-500 leading-relaxed">同一天修改復盤不會重複加智慧；Boss 標籤一天最多只記 1 次。</p>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
+                <div>
+                  <p className="text-xs text-slate-500">建立後要靠實際行動驗證</p>
+                  <h3 className="text-lg font-black">我的原則</h3>
+                </div>
+                <TextInput label="新增一條原則" value={principleDraft.title} onChange={(value) => setPrincipleDraft((draft) => ({ ...draft, title: value }))} placeholder="例如：重大決定至少寫出三個方案。" />
+                <SelectInput label="分類" value={principleDraft.category} onChange={(value) => setPrincipleDraft((draft) => ({ ...draft, category: value }))} options={["工作", "金錢", "家庭", "健康", "學習", "決策"]} />
+                <button onClick={addManualPrinciple} className="w-full rounded-2xl bg-slate-700 text-white h-11 font-black">＋ 加入實驗原則</button>
+
+                {state.principles.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-600 p-4 text-sm text-slate-400">還沒有原則。今晚先做一次戰後復盤，從真實事件裡提煉第一條。</div>
+                ) : (
+                  <div className="space-y-3 pt-1">
+                    {state.principles.map((principle) => {
+                      const stage = principleStage(principle.xp);
+                      const usedToday = principle.usageDates.includes(state.day);
+                      return (
+                        <div key={principle.id} className="rounded-2xl bg-slate-950 border border-slate-700 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex gap-2 flex-wrap mb-2">
+                                <span className="text-[10px] px-2 py-1 rounded-full bg-blue-300/15 text-blue-200 border border-blue-300/20">{principle.category}</span>
+                                <span className="text-[10px] px-2 py-1 rounded-full bg-amber-300/15 text-amber-200 border border-amber-300/20">{stage.label}</span>
+                              </div>
+                              <h4 className="font-black leading-relaxed">{principle.title}</h4>
+                              <p className="text-xs text-slate-500 mt-2">已驗證 {principle.xp} 次・{stage.next}</p>
+                            </div>
+                            <button onClick={() => deletePrinciple(principle.id)} className="text-slate-600 hover:text-rose-400 p-1">✕</button>
+                          </div>
+                          <button onClick={() => markPrincipleUsed(principle.id)} disabled={usedToday} className={`w-full mt-3 rounded-xl h-10 text-sm font-black ${usedToday ? "bg-emerald-950 text-emerald-300 border border-emerald-500/30" : "bg-emerald-300 text-emerald-950"}`}>{usedToday ? "今天已照做 ✓" : "今天有照這條原則做"}</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-800 border border-rose-400/25 rounded-3xl p-4 space-y-3">
+                <div className="flex items-end justify-between gap-3">
+                  <div><p className="text-xs text-rose-300">同名問題重複 3 天＝Boss 成形</p><h3 className="text-lg font-black mt-1">Boss 圖鑑</h3></div>
+                  <span className="text-xs text-slate-500">核心原則 {corePrincipleCount}</span>
+                </div>
+                {state.bossBook.length === 0 ? (
+                  <p className="text-sm text-slate-400">目前沒有 Boss 紀錄。復盤時填入問題標籤，系統會自動累積。</p>
+                ) : (
+                  state.bossBook.map((boss) => {
+                    const count = boss.dates.length;
+                    const defeated = boss.status === "defeated";
+                    return (
+                      <div key={boss.id} className={`rounded-2xl border p-3 ${defeated ? "bg-emerald-950/25 border-emerald-500/25" : count >= 3 ? "bg-rose-950/30 border-rose-400/35" : "bg-slate-950 border-slate-700"}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div><h4 className="font-black">{boss.name}</h4><p className="text-xs text-slate-400 mt-1">出現 {count} 天・{bossRank(count)}・最近 {boss.lastSeen}</p></div>
+                          <span className={`text-xs px-2 py-1 rounded-full ${defeated ? "bg-emerald-300 text-emerald-950" : "bg-rose-300/15 text-rose-200"}`}>{defeated ? "已破解" : "戰鬥中"}</span>
+                        </div>
+                        <button onClick={() => setBossStatus(boss.id, defeated ? "active" : "defeated")} className="w-full mt-3 rounded-xl bg-slate-800 border border-slate-700 h-9 text-xs font-black">{defeated ? "重新列入戰鬥" : "標記已破解"}</button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {state.reflectionHistory.length > 0 && (
+                <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4">
+                  <h3 className="font-black">最近復盤</h3>
+                  <div className="space-y-3 mt-3">
+                    {state.reflectionHistory.slice(0, 7).map((item) => (
+                      <div key={item.date} className="rounded-2xl bg-slate-950 border border-slate-700 p-3">
+                        <p className="text-xs text-amber-300 font-bold">{item.date}{item.bossTag ? `・Boss：${item.bossTag}` : ""}</p>
+                        {item.stuck && <p className="text-sm text-slate-300 mt-2">卡住：{item.stuck}</p>}
+                        {item.nextRule && <p className="text-sm text-emerald-200 mt-1">下次：{item.nextRule}</p>}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </section>
@@ -2441,7 +2786,7 @@ export default function LifeLevelingAppV13Shared() {
           {tab === "settings" && (
             <section className="space-y-3">
               <h2 className="text-2xl font-black">設定</h2>
-              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v13.3 三端安靜同步版</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">安卓、iPad、電腦共用 Firebase 的同一份主存檔。App 會自動匿名連線，不用輸入帳號密碼；村長、待辦、熱量、體重、金幣和戰報都會同步。</p></div>
+              <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">v14 原則之書</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">保留 v13.3 的三端安靜同步與全部既有資料；新增戰後復盤、智慧值、原則之書與 Boss 圖鑑，全部一起同步。</p></div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4 space-y-3">
                 <div className="flex justify-between items-start gap-3">
@@ -2462,7 +2807,7 @@ export default function LifeLevelingAppV13Shared() {
                 <button onClick={uploadLocalAsCloudMain} className="w-full rounded-2xl bg-amber-300 text-slate-950 h-12 font-black">上傳這台資料為共用主檔</button>
                 <button onClick={downloadCloudMain} disabled={!cloudExists} className={`w-full rounded-2xl h-12 font-black ${cloudExists ? "bg-emerald-300 text-emerald-950" : "bg-slate-700 text-slate-500"}`}>下載雲端主檔到這台</button>
                 <p className="text-xs text-slate-500 leading-relaxed">雲端主檔建立後，平常每次修改約 1 秒自動同步。兩台同時修改時，以最後寫入的內容為準。</p>
-                <p className="text-xs text-emerald-300/80 leading-relaxed">v13.3 改用匿名驗證，不需要公開整個資料庫，可把 Firebase 規則改成 auth != null，避免公開規則警告信一直寄來。</p>
+                <p className="text-xs text-emerald-300/80 leading-relaxed">v14 延續匿名驗證，不需要公開整個資料庫，可把 Firebase 規則改成 auth != null，避免公開規則警告信一直寄來。</p>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-4"><h3 className="font-black">本機備援</h3><p className="text-sm text-slate-300 leading-relaxed mt-2">仍固定使用 life-leveling-main-save。斷網時可繼續操作，恢復連線後會把最新本機狀態同步到公開共用主檔。</p></div>
@@ -2613,6 +2958,10 @@ function RecordBox({ label, value }) {
 
 function TextInput({ label, type = "text", value, onChange, placeholder }) {
   return <div><label className="block text-xs text-slate-400 mb-1 font-bold">{label}</label><input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 h-11 text-sm text-white focus:outline-none focus:border-amber-400" /></div>;
+}
+
+function TextAreaInput({ label, value, onChange, placeholder }) {
+  return <div><label className="block text-xs text-slate-400 mb-1 font-bold">{label}</label><textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} rows={3} className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-400 resize-none" /></div>;
 }
 
 function SelectInput({ label, value, onChange, options }) {
