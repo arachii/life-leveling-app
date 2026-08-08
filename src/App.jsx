@@ -321,6 +321,38 @@ const playerTitles = [
   { level: 10, title: "三房兩廳遠征者" },
   { level: 12, title: "家業雙線推進者" },
   { level: 15, title: "人生主線開拓者" },
+  { level: 18, title: "節奏掌控者" },
+  { level: 20, title: "自我管理鍛造者" },
+  { level: 25, title: "人生解題者" },
+  { level: 30, title: "原則初成者" },
+  { level: 35, title: "原則實踐者" },
+  { level: 40, title: "系統建立者" },
+  { level: 45, title: "長期主義者" },
+  { level: 50, title: "人生掌舵者" },
+  { level: 55, title: "家業並進者" },
+  { level: 60, title: "穩定複利者" },
+  { level: 65, title: "風浪守序者" },
+  { level: 70, title: "人生架構師" },
+  { level: 75, title: "自我治理者" },
+  { level: 80, title: "原則鍛造師" },
+  { level: 85, title: "世代守護者" },
+  { level: 90, title: "原則傳承者" },
+  { level: 95, title: "長線守望者" },
+  { level: 100, title: "自己人生的主人" },
+];
+
+const roleRanks = [
+  { level: 1, title: "火種村民" },
+  { level: 10, title: "人生冒險者" },
+  { level: 20, title: "家庭守護型房仲勇者" },
+  { level: 30, title: "原則鍛造師" },
+  { level: 40, title: "人生系統工匠" },
+  { level: 50, title: "人生掌舵者" },
+  { level: 60, title: "家業領航者" },
+  { level: 70, title: "長期複利行者" },
+  { level: 80, title: "人生架構師" },
+  { level: 90, title: "自我治理者" },
+  { level: 100, title: "人生村長" },
 ];
 
 const rewardPools = {
@@ -839,6 +871,13 @@ const initialState = {
 };
 
 function getPlayerTitle(level) {
+  if (level >= 100) {
+    const chapter = Math.floor((level - 100) / 25) + 1;
+    return chapter === 1
+      ? "自己人生的主人"
+      : `自己的主人・第${chapter}章`;
+  }
+
   let title = playerTitles[0].title;
   for (const item of playerTitles) {
     if (level >= item.level) title = item.title;
@@ -847,7 +886,38 @@ function getPlayerTitle(level) {
 }
 
 function getNextPlayerTitle(level) {
-  return playerTitles.find((item) => item.level > level) || null;
+  const next = playerTitles.find((item) => item.level > level);
+  if (next) return next;
+
+  const currentChapter = Math.floor((Math.max(level, 100) - 100) / 25) + 1;
+  return {
+    level: 100 + currentChapter * 25,
+    title: `自己的主人・第${currentChapter + 1}章`,
+  };
+}
+
+function getRoleRank(level) {
+  if (level >= 100) {
+    const rank = Math.floor((level - 100) / 25) + 1;
+    return `人生村長・第${rank}階`;
+  }
+
+  let title = roleRanks[0].title;
+  for (const item of roleRanks) {
+    if (level >= item.level) title = item.title;
+  }
+  return title;
+}
+
+function getNextRoleRank(level) {
+  const next = roleRanks.find((item) => item.level > level);
+  if (next) return next;
+
+  const currentRank = Math.floor((Math.max(level, 100) - 100) / 25) + 1;
+  return {
+    level: 100 + currentRank * 25,
+    title: `人生村長・第${currentRank + 1}階`,
+  };
 }
 
 function attrLevel(value) {
@@ -1588,6 +1658,8 @@ export default function LifeLevelingAppV14Principles() {
   const expInLevel = state.exp % 100;
   const nextExp = 100 - expInLevel;
   const nextTitle = getNextPlayerTitle(level);
+  const roleRank = getRoleRank(level);
+  const nextRole = getNextRoleRank(level);
   const dailyTitle = getDailyTitle(state.tasks, state.todos);
   const battleMessage = getBattleMessage(state.tasks, state.todos);
   const unlock = getRewardUnlock(state);
@@ -2268,7 +2340,7 @@ export default function LifeLevelingAppV14Principles() {
             <p className="text-xs text-slate-400 mt-3">
               下一稱號：
               <span className="text-amber-300 font-bold ml-1">
-                {nextTitle ? `${nextTitle.title}（Lv.${nextTitle.level}）` : "已達目前最高稱號"}
+                {`${nextTitle.title}（Lv.${nextTitle.level}）`}
               </span>
             </p>
           </div>
@@ -2752,9 +2824,11 @@ export default function LifeLevelingAppV14Principles() {
               <h2 className="text-2xl font-black">角色成長</h2>
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-5 text-center">
                 <div className="mx-auto w-24 h-24 rounded-3xl bg-gradient-to-br from-amber-300/30 to-blue-400/20 border border-slate-600 flex items-center justify-center mb-3 shadow-[0_0_24px_rgba(251,191,36,0.15)]"><span className="text-3xl font-black text-amber-200">人</span></div>
-                <h3 className="text-xl font-black">家庭守護型房仲勇者</h3>
-                <p className="text-sm text-amber-300 mt-1">稱號：{getPlayerTitle(level)}</p>
-                <p className="text-xs text-slate-400 mt-2">下一稱號：{nextTitle ? ` ${nextTitle.title}（Lv.${nextTitle.level}）` : " 已達目前最高稱號"}</p>
+                <p className="text-xs text-slate-500 font-bold">目前職階</p>
+                <h3 className="text-xl font-black mt-1">{roleRank}</h3>
+                <p className="text-sm text-amber-300 mt-2">稱號：{getPlayerTitle(level)}</p>
+                <p className="text-xs text-slate-400 mt-2">下一稱號：{nextTitle.title}（Lv.{nextTitle.level}）</p>
+                <p className="text-xs text-slate-500 mt-1">下一職階：{nextRole.title}（Lv.{nextRole.level}）</p>
               </div>
               {Object.keys(attrMeta).map((name) => {
                 const value = state.attrs[name] || 0;
