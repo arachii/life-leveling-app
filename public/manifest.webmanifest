@@ -1,0 +1,14 @@
+{
+  "name": "人生打怪村 v15",
+  "short_name": "打怪村",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07101f",
+  "theme_color": "#07101f",
+  "lang": "zh-Hant",
+  "description": "把人生主線、待辦、能量、原則、熱量與成長整合成一個不斷線系統。",
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}
